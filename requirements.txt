@@ -1,0 +1,36 @@
+# GEMSCAP Quantitative Trading System - Streamlit Edition
+# Requirements for Redis-free architecture with in-memory data management.
+
+# Web framework
+streamlit>=1.28.0
+
+# Visualization
+plotly>=5.17.0
+
+# WebSocket for real-time data
+websockets>=12.0
+
+# Data processing
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Statistical analysis
+scipy>=1.11.0
+statsmodels>=0.14.0
+
+# System monitoring
+psutil>=5.9.0
+
+# Database (builtin with Python, no install needed)
+# sqlite3 - included in standard library
+
+# Optional for chart export (uncomment if needed)
+# kaleido>=0.2.1
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.1
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
