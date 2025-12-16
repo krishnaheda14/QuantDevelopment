@@ -1,75 +1,71 @@
 # GEMSCAP Quantitative Trading System v2.0
 
-**Streamlit Edition** - Redis-free architecture with real-time crypto pairs trading analysis.
+**Professional Architecture** - FastAPI backend + Streamlit frontend with Redis for real-time data.
 
-## Features
+## Architecture Overview
 
-### Core Capabilities
-✅ Real-time tick ingestion from Binance (13 crypto pairs)  
-✅ Multi-timeframe OHLC aggregation (1s, 1m, 5m)  
-✅ Statistical analysis: OLS regression, spread calculation, z-score, correlation  
-✅ Augmented Dickey-Fuller (ADF) test for stationarity  
-✅ Interactive Plotly charts with zoom, pan, hover tooltips  
-✅ Alert system with severity levels  
-✅ Data export (CSV, JSON)  
-✅ Single command launch
-
-### Trading Strategies
-- **Z-Score Mean Reversion**: Entry/exit based on spread z-score thresholds
-- **RSI Oscillator**: Oversold/overbought signals (14-period RSI)
-- **MACD Crossover**: Bullish/bearish momentum signals
-- **Multi-Strategy**: Ensemble combining RSI and MACD
-
-### Technical Indicators
-- Relative Strength Index (RSI)
-- Moving Average Convergence Divergence (MACD)
-- Bollinger Bands (mean ± 2σ)
-- Stochastic Oscillator (%K, %D)
-- Average True Range (ATR)
-- On-Balance Volume (OBV)
-- Volume Weighted Average Price (VWAP)
-
-### Advanced Features
-- **What-If Analysis**: Interactive sliders to simulate correlation changes, volatility multipliers, hedge ratio adjustments
-- **Backtesting Engine**: Test strategies on historical data with performance metrics (Sharpe ratio, max drawdown, win rate)
-- **Enhanced Visualizations**: Entry/exit markers, Bollinger bands overlay, multi-row subplots
-- **Alert Management**: Configure and monitor z-score, RSI, MACD alerts with severity levels
-
-### Supported Crypto Pairs (13 symbols)
-BTC/USDT, ETH/USDT, BNB/USDT, SOL/USDT, ADA/USDT, DOT/USDT, MATIC/USDT, AVAX/USDT, LINK/USDT, UNI/USDT, ATOM/USDT, LTC/USDT, XRP/USDT
-
-## Architecture
-
-### Simplified Design
 ```
-┌─────────────────────────────────────────────┐
-│         Streamlit Web Application           │
-│  (6 tabs: Spread, Signals, Stats, Backtest, │
-│           Alerts, System)                   │
-└──────────────┬──────────────────────────────┘
-               │
-               │ In-Memory Data
+┌─────────────────────────────────────────────────────────────┐
+│                    STREAMLIT FRONTEND                       │
+│                   (http://localhost:8501)                   │
+│  • 6 Tabs: Spread, Signals, Stats, Backtest, Alerts, System│
+│  • Interactive Plotly charts                                 │
+│  • Real-time WebSocket connection to backend                │
+└──────────────┬──────────────────────────────────────────────┘
+               │ HTTP REST + WebSocket
                ↓
-┌──────────────────────────────────────────────┐
-│           Data Manager                       │
-│  • In-memory deques (10k ticks, OHLC bars)  │
-│  • WebSocket client (Binance)               │
-│  • SQLite persistence (1m bars)             │
-└──────────────┬───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                   FASTAPI BACKEND                           │
+│                  (http://localhost:8000)                    │
+│                                                             │
+│  REST APIs:                                                 │
+│  • /api/analytics  - OLS, spread, ADF, correlation         │
+│  • /api/alerts     - Alert rules & management               │
+│  • /api/export     - CSV/JSON data export                   │
+│  • /api/debug      - System diagnostics & validation        │
+│                                                             │
+│  WebSocket:                                                 │
+│  • /ws/live       - Real-time data streaming                │
+│                                                             │
+│  Background Services:                                       │
+│  • Data Ingestion  - Binance WebSocket consumer            │
+│  • Sampling Engine - 1s/1m/5m/15m/1h OHLC aggregation      │
+│  • Alert Engine    - Real-time threshold monitoring         │
+└──────────────┬──────────────────────────────────────────────┘
                │
-               │ Real-time
                ↓
-┌──────────────────────────────────────────────┐
-│       Binance WebSocket Stream               │
-│  (Combined 13-symbol tick feed)              │
-└──────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      REDIS DATABASE                         │
+│                  (redis://localhost:6379)                   │
+│                                                             │
+│  • Tick data (stream)                                       │
+│  • OHLC bars (1s, 1m, 5m, 15m, 1h)                         │
+│  • Analytics cache                                          │
+│  • Alert rules & history                                    │
+│  • Pub/Sub for real-time updates                           │
+└──────────────┬──────────────────────────────────────────────┘
+               │
+               ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  BINANCE WEBSOCKET API                      │
+│               wss://stream.binance.com:9443                 │
+│  • 13 crypto pairs (BTC, ETH, BNB, SOL, etc.)              │
+│  • Real-time trade data                                     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Design Decisions:**
-- **No Redis**: Eliminated complexity, uses in-memory deques + SQLite
-- **Unified App**: Streamlit-only (no separate FastAPI backend)
-- **Background Thread**: WebSocket runs in daemon thread (non-blocking UI)
-- **Session State**: Persistent objects across Streamlit reruns
+## Key Design Decisions
+
+✅ **FastAPI Backend** - Modern async API framework with automatic OpenAPI docs  
+✅ **Redis for Real-Time Data** - High-performance in-memory storage with pub/sub  
+✅ **WebSocket API** - `/ws/live` endpoint for real-time frontend updates  
+✅ **Modular Services** - Loose coupling between ingestion, sampling, and alerting  
+✅ **RESTful Endpoints** - Standard HTTP APIs for all analytics operations  
+✅ **Configurable Sampling** - 1s/1m/5m/15m/1h timeframes  
+✅ **Backend-Driven Alerts** - Alert rules managed via API, not just UI  
+✅ **Debug/Validation Layer** - `/api/debug` endpoints for system diagnostics  
+✅ **Data Export APIs** - `/api/export` for CSV/JSON downloads  
+✅ **Separation of Concerns** - Frontend for display, backend for logic
 
 ## Setup Instructions
 

@@ -24,6 +24,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Compatibility helper: safe rerun across Streamlit versions
+def safe_rerun():
+    rerun_fn = getattr(st, "experimental_rerun", None)
+    if callable(rerun_fn):
+        return rerun_fn()
+    try:
+        from streamlit.runtime.scriptrunner.script_runner import RerunException
+        raise RerunException()
+    except Exception:
+        st.session_state['_applied_toggle'] = not st.session_state.get('_applied_toggle', False)
+        try:
+            st.experimental_set_query_params(_applied=int(time.time()))
+        except Exception:
+            st.stop()
+
 # Custom CSS for trader-friendly UI
 st.markdown("""
 <style>
@@ -65,8 +80,10 @@ with st.sidebar:
     
     # Connection Status (Top of sidebar)
     status = st.session_state.data_manager.get_connection_status()
-    if status['connected']:
-        st.success(f"🟢 Live: {status['symbols']} symbols")
+    # Consider feed live if websocket connected OR we have any ticks/active symbols
+    is_live = bool(status.get('connected')) or int(status.get('total_ticks', 0)) > 0 or int(status.get('active_symbols', 0)) > 0
+    if is_live:
+        st.success(f"🟢 Live: {status.get('active_symbols', 0)} active / {status.get('symbols', 0)} configured symbols (ticks: {status.get('total_ticks', 0)})")
     else:
         st.error("🔴 Disconnected - Reconnecting...")
     
@@ -82,29 +99,130 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("Time Window")
-    lookback = st.slider("Lookback (minutes)", 5, 60, 15)
+    if 'pending_lookback' not in st.session_state:
+        st.session_state.pending_lookback = 15
+    lookback = st.slider("Lookback (minutes)", 1, 60, st.session_state.pending_lookback, key='pending_lookback')
+
+    # Aggregation interval (allow seconds and minutes)
+    interval_options = ['1s', '5s', '10s', '1m', '5m']
+    if 'applied_config' not in st.session_state:
+        st.session_state.applied_config = {'interval': '1s', 'zscore_entry': 2.0, 'zscore_exit': 0.0, 'lookback': lookback}
+    default_interval = st.session_state.applied_config.get('interval', '1m')
+    idx = interval_options.index(default_interval) if default_interval in interval_options else 0
+    st.selectbox("Aggregation Interval", interval_options, index=idx, key='pending_interval')
     
     st.markdown("---")
     st.subheader("Strategy Settings")
-    zscore_entry = st.number_input("Z-Score Entry", 1.0, 5.0, 2.0, 0.5)
-    zscore_exit = st.number_input("Z-Score Exit", -1.0, 1.0, 0.0, 0.25)
+    if 'pending_zscore_entry' not in st.session_state:
+        st.session_state.pending_zscore_entry = st.session_state.applied_config.get('zscore_entry', 2.0)
+    if 'pending_zscore_exit' not in st.session_state:
+        st.session_state.pending_zscore_exit = st.session_state.applied_config.get('zscore_exit', 0.0)
+
+    st.number_input("Z-Score Entry", 0.5, 10.0, st.session_state.pending_zscore_entry, 0.1, key='pending_zscore_entry')
+    st.number_input("Z-Score Exit", -5.0, 5.0, st.session_state.pending_zscore_exit, 0.1, key='pending_zscore_exit')
+    st.markdown("""
+    **What changing Z-Score does:**
+    - Higher entry threshold → fewer signals (only large deviations trigger trades).
+    - Lower entry threshold → more frequent signals (more sensitive to spread moves).
+    - Exit threshold controls when to close the position (closer to 0 means quicker exits).
+    """, unsafe_allow_html=True)
     
     rsi_oversold = st.slider("RSI Oversold", 10, 40, 30)
     rsi_overbought = st.slider("RSI Overbought", 60, 90, 70)
     
     st.markdown("---")
+    # Apply changes button: only commit pending settings when user clicks
+    if st.button("Apply Changes", use_container_width=True):
+        st.session_state.applied_config = {
+            'interval': st.session_state.get('pending_interval', st.session_state.applied_config.get('interval', '1m')),
+            'zscore_entry': st.session_state.get('pending_zscore_entry', st.session_state.applied_config.get('zscore_entry', 2.0)),
+            'zscore_exit': st.session_state.get('pending_zscore_exit', st.session_state.applied_config.get('zscore_exit', 0.0)),
+            'lookback': st.session_state.get('pending_lookback', st.session_state.applied_config.get('lookback', 15))
+        }
+        st.success("✅ Applied configuration")
+        # Use safe rerun helper to support multiple Streamlit versions
+        safe_rerun()
+
     if st.button("🔄 Refresh Data", use_container_width=True):
-        st.rerun()
-    
+        safe_rerun()
+
     if st.button("📥 Export All", use_container_width=True):
         st.session_state.export_trigger = True
 
 # Data accumulation status banner
 st.markdown("### 📡 GEMSCAP Real-Time Quantitative Trading System")
 
-# Get quick data check for both symbols
-quick_data1 = st.session_state.data_manager.get_ohlc(symbol1, '1m', 1)
-quick_data2 = st.session_state.data_manager.get_ohlc(symbol2, '1m', 1)
+# Helper: fetch bars for requested interval (supports seconds via resampling 1s bars)
+def fetch_bars(dm, symbol, interval, lookback_min):
+    # lookback_min expressed in minutes
+    if interval.endswith('s'):
+        # Build continuous 1-second bars from raw ticks, then resample to requested seconds
+        sec = int(interval[:-1])
+        # collect recent ticks (deque) from DataManager
+        lookback_secs = max(1, lookback_min * 60)
+        cutoff_ms = int((time.time() - lookback_secs) * 1000)
+        raw_ticks = list(dm.ticks.get(symbol, []))
+        recent = [t for t in raw_ticks if t['timestamp'] >= cutoff_ms]
+        if not recent:
+            return []
+        df = pd.DataFrame(recent)
+        if df.empty:
+            return []
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df = df.set_index('datetime').sort_index()
+
+        # Create 1s OHLC with forward-fill for seconds with no trades
+        price_ohlc = df['price'].resample('1S').agg(['first', 'max', 'min', 'last'])
+        vol = df['quantity'].resample('1S').sum().fillna(0)
+        price_ohlc = price_ohlc.fillna(method='ffill')
+        price_ohlc = price_ohlc.fillna(0)
+        price_ohlc.columns = ['open', 'high', 'low', 'close']
+        price_ohlc['volume'] = vol
+        price_ohlc = price_ohlc.reset_index()
+
+        # If requested >1s, further aggregate
+        if sec > 1:
+            agg = price_ohlc.set_index('datetime').resample(f"{sec}S").agg({
+                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+            }).dropna().reset_index()
+        else:
+            agg = price_ohlc
+
+        if agg.empty:
+            return []
+        agg['timestamp'] = (agg['datetime'].astype('int64') // 1_000_000).astype(int)
+        return agg.to_dict('records')
+    else:
+        # minutes-based intervals supported directly
+        return dm.get_ohlc(symbol, interval, max(1, lookback_min if interval == '1m' else (lookback_min // (int(interval[:-1]) if interval.endswith('m') else 1)) ))
+
+
+def get_bars(dm, symbol, interval, lookback_min):
+    """Unified accessor: return bars for seconds intervals via fetch_bars, otherwise use DataManager.get_ohlc."""
+    if interval.endswith('s'):
+        return fetch_bars(dm, symbol, interval, lookback_min)
+    # minutes-based - compute limit conservatively (lookback_min bars)
+    if interval == '1m':
+        limit = max(1, lookback_min)
+    else:
+        # e.g., '5m' -> number of 5m bars in lookback_min
+        try:
+            m = int(interval[:-1]) if interval.endswith('m') else 1
+            limit = max(1, lookback_min // m)
+        except Exception:
+            limit = max(1, lookback_min)
+    return dm.get_ohlc(symbol, interval, limit)
+
+# Determine applied config
+applied = st.session_state.get('applied_config', {'interval':'1m','lookback': lookback, 'zscore_entry':2.0, 'zscore_exit':0.0})
+agg_interval = applied.get('interval', '1m')
+agg_lookback = applied.get('lookback', lookback)
+zscore_entry = applied.get('zscore_entry', 2.0)
+zscore_exit = applied.get('zscore_exit', 0.0)
+
+# Get quick data check for both symbols using applied interval
+quick_data1 = fetch_bars(st.session_state.data_manager, symbol1, agg_interval, agg_lookback)
+quick_data2 = fetch_bars(st.session_state.data_manager, symbol2, agg_interval, agg_lookback)
 data_ready = len(quick_data1) > 0 and len(quick_data2) > 0
 
 if data_ready:
@@ -135,13 +253,14 @@ else:
 st.markdown("---")
 
 # Main content
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Spread Analysis",
     "🎯 Strategy Signals", 
     "📊 Statistical Tests",
     "🔍 Backtesting",
     "🔔 Alerts",
-    "⚙️ System"
+    "⚙️ System",
+    "🔎 Quick Compare"
 ])
 
 # Tab 1: Spread Analysis
@@ -149,9 +268,9 @@ with tab1:
     st.header(f"Pairs Trading: {symbol1} / {symbol2}")
     
     # Get data with debugging
-    print(f"[DEBUG] Fetching OHLC for {symbol1} and {symbol2}, lookback={lookback}min")
-    data1 = st.session_state.data_manager.get_ohlc(symbol1, '1m', lookback)
-    data2 = st.session_state.data_manager.get_ohlc(symbol2, '1m', lookback)
+    print(f"[DEBUG] Fetching OHLC for {symbol1} and {symbol2}, lookback={lookback}min (agg={agg_interval})")
+    data1 = get_bars(st.session_state.data_manager, symbol1, agg_interval, agg_lookback)
+    data2 = get_bars(st.session_state.data_manager, symbol2, agg_interval, agg_lookback)
     
     print(f"[DEBUG] Data received: {symbol1}={len(data1)} bars, {symbol2}={len(data2)} bars")
     
@@ -173,11 +292,25 @@ with tab1:
     
     if len(data1) > 20 and len(data2) > 20:
         print(f"[DEBUG] Sufficient data - computing spread analysis")
-        prices1 = [d['close'] for d in data1]
-        prices2 = [d['close'] for d in data2]
-        timestamps = [d['timestamp'] for d in data1]
+        # Align bars by timestamp to ensure equal-length series for OLS
+        map1 = {int(d['timestamp']): d['close'] for d in data1}
+        map2 = {int(d['timestamp']): d['close'] for d in data2}
+        common_ts = sorted(set(map1.keys()) & set(map2.keys()))
+        if len(common_ts) < 20:
+            st.warning(f"Not enough aligned bars for analysis (need 20+, have {len(common_ts)}).")
+        prices1 = [map1[t] for t in common_ts]
+        prices2 = [map2[t] for t in common_ts]
+        timestamps = common_ts
         
-        # Compute OLS and spread
+        # Ensure arrays are equal-length (defensive trim if necessary)
+        if len(prices1) != len(prices2):
+            min_len = min(len(prices1), len(prices2))
+            prices1 = prices1[-min_len:]
+            prices2 = prices2[-min_len:]
+            timestamps = timestamps[-min_len:]
+            print(f"[WARN] Trimmed aligned series to min length={min_len}")
+
+        # Compute OLS and spread (now with aligned arrays)
         ols_result = st.session_state.stats.ols_regression(prices1, prices2)
         spread_data = st.session_state.strategy_engine.compute_spread(
             prices1, prices2, ols_result['hedge_ratio']
@@ -410,6 +543,91 @@ with tab3:
             except Exception as e:
                 st.error(f"Error: {e}")
     
+# Tab 7: Quick Compare - price + volume for both symbols (fallback to ticks)
+with tab7:
+    st.header(f"Quick Compare: {symbol1} vs {symbol2}")
+
+    def _build_df_from_ohlc(ohlc_list):
+        if not ohlc_list:
+            return pd.DataFrame()
+        df = pd.DataFrame(ohlc_list)
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df.sort_values('datetime')
+
+    def _build_df_from_ticks(tick_deque, max_points=500):
+        ticks = list(tick_deque)[-max_points:]
+        if not ticks:
+            return pd.DataFrame()
+        df = pd.DataFrame([{
+            'price': t['price'],
+            'volume': t['quantity'],
+            'timestamp': t['timestamp']
+        } for t in ticks])
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df.sort_values('datetime')
+
+    dm = st.session_state.data_manager
+
+    # Try OHLC first, otherwise fall back to ticks
+    df1 = _build_df_from_ohlc(get_bars(dm, symbol1, agg_interval, agg_lookback))
+    if df1.empty:
+        df1 = _build_df_from_ticks(dm.ticks[symbol1])
+
+    df2 = _build_df_from_ohlc(get_bars(dm, symbol2, agg_interval, agg_lookback))
+    if df2.empty:
+        df2 = _build_df_from_ticks(dm.ticks[symbol2])
+
+    if df1.empty and df2.empty:
+        st.warning("No data available yet for either symbol. Waiting for ticks or bars...")
+    else:
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.subheader(symbol1)
+            if not df1.empty:
+                fig1 = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+                fig1.add_trace(go.Scatter(x=df1['datetime'], y=df1['close'] if 'close' in df1.columns else df1['price'],
+                                          name='Price', line=dict(color='orange')), row=1, col=1)
+                vol_y = df1['volume'] if 'volume' in df1.columns else df1['quantity'] if 'quantity' in df1.columns else df1.get('volume', None)
+                if vol_y is not None:
+                    fig1.add_trace(go.Bar(x=df1['datetime'], y=vol_y, name='Volume', marker_color='lightblue'), row=2, col=1)
+                fig1.update_layout(height=400, showlegend=False)
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.info("No 1m bars; showing recent ticks (if any)")
+                st.write(df1.tail(50))
+
+        with col_b:
+            st.subheader(symbol2)
+            if not df2.empty:
+                fig2 = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+                fig2.add_trace(go.Scatter(x=df2['datetime'], y=df2['close'] if 'close' in df2.columns else df2['price'],
+                                          name='Price', line=dict(color='cyan')), row=1, col=1)
+                vol_y2 = df2['volume'] if 'volume' in df2.columns else df2['quantity'] if 'quantity' in df2.columns else df2.get('volume', None)
+                if vol_y2 is not None:
+                    fig2.add_trace(go.Bar(x=df2['datetime'], y=vol_y2, name='Volume', marker_color='lightgreen'), row=2, col=1)
+                fig2.update_layout(height=400, showlegend=False)
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("No 1m bars; showing recent ticks (if any)")
+                st.write(df2.tail(50))
+
+        # Combined small metrics
+        mcol1, mcol2, mcol3 = st.columns(3)
+        with mcol1:
+            if not df1.empty:
+                st.metric(f"{symbol1} Latest", f"${(df1['close'] if 'close' in df1.columns else df1['price']).iloc[-1]:.2f}")
+            else:
+                st.metric(f"{symbol1} Latest", "n/a")
+        with mcol2:
+            if not df2.empty:
+                st.metric(f"{symbol2} Latest", f"${(df2['close'] if 'close' in df2.columns else df2['price']).iloc[-1]:.2f}")
+            else:
+                st.metric(f"{symbol2} Latest", "n/a")
+        with mcol3:
+            total_ticks = dm.tick_count
+            st.metric("Ticks Received", f"{total_ticks}")
+
     with col2:
         st.subheader(f"ADF Test - {symbol2}")
         if len(data2) > 20:
@@ -549,9 +767,10 @@ with tab6:
     
     # Data table
     st.subheader("Recent Data")
-    recent_data = st.session_state.data_manager.get_ohlc(symbol1, '1m', 10)
+    recent_data = get_bars(st.session_state.data_manager, symbol1, agg_interval, max(1, agg_lookback))
     if recent_data:
-        df = pd.DataFrame(recent_data)
+        # show most recent 10 bars
+        df = pd.DataFrame(recent_data[-10:])
         st.dataframe(df, use_container_width=True)
     
     # Export functionality
@@ -560,9 +779,9 @@ with tab6:
         
         # Prepare export package
         export_data = {
-            'ohlc_data': {
-                symbol1: st.session_state.data_manager.get_ohlc(symbol1, '1m', 1000),
-                symbol2: st.session_state.data_manager.get_ohlc(symbol2, '1m', 1000)
+                'ohlc_data': {
+                symbol1: get_bars(st.session_state.data_manager, symbol1, agg_interval, 1000),
+                symbol2: get_bars(st.session_state.data_manager, symbol2, agg_interval, 1000)
             },
             'analytics': {
                 'ols': ols_result if 'ols_result' in locals() else None,
@@ -594,8 +813,9 @@ auto_refresh = st.checkbox("Auto-refresh (5s)", value=should_auto_refresh,
 status = st.session_state.data_manager.get_connection_status()
 col1, col2, col3 = st.columns(3)
 with col1:
-    if status['connected']:
-        st.success(f"🟢 LIVE: {status['symbols']} symbols streaming")
+    is_live = bool(status.get('connected')) or int(status.get('total_ticks', 0)) > 0 or int(status.get('active_symbols', 0)) > 0
+    if is_live:
+        st.success(f"🟢 LIVE: {status.get('active_symbols', 0)} active / {status.get('symbols', 0)} configured symbols streaming (ticks: {status.get('total_ticks', 0)})")
     else:
         st.error("🔴 Disconnected - Reconnecting...")
 with col2:

@@ -243,7 +243,8 @@ class DataManager:
         return {
             'connected': self.ws_connected,
             'active_symbols': len([s for s in self.SYMBOLS if self.ticks[s]]),
-            'total_ticks': self.tick_count
+            'total_ticks': self.tick_count,
+            'symbols': len(self.SYMBOLS)
         }
     
     def get_db_stats(self) -> Dict:
