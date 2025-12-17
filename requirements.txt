@@ -27,6 +27,8 @@ pandas>=2.0.0
 # Statistical analysis
 scipy>=1.11.0
 statsmodels>=0.14.0
+scikit-learn>=1.3.0  # For robust regression (Huber, Theil-Sen)
+pykalman>=0.9.5  # For Kalman filter
 
 # System monitoring
 psutil>=5.9.0

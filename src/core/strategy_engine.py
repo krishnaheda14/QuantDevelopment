@@ -220,3 +220,191 @@ class StrategyEngine:
             hedge_ratios.append(float(beta[0]))
         
         return hedge_ratios
+
+    def momentum_strategy(self, prices: List[float], lookback: int = 20, 
+                          threshold: float = 0.02) -> Dict:
+        """
+        Momentum strategy based on rate of change.
+        
+        Args:
+            prices: Price series
+            lookback: Lookback period for momentum calculation
+            threshold: Threshold for signal generation (e.g., 2% = 0.02)
+        
+        Returns:
+            Dictionary with momentum values, signals, and interpretation
+        """
+        prices_arr = np.array(prices)
+        
+        if len(prices_arr) < lookback + 1:
+            return {
+                "momentum": [],
+                "signals": [],
+                "current_momentum": 0.0,
+                "interpretation": "Insufficient data"
+            }
+        
+        # Calculate rolling momentum (rate of change)
+        momentum = []
+        for i in range(lookback, len(prices_arr)):
+            roc = (prices_arr[i] - prices_arr[i - lookback]) / prices_arr[i - lookback]
+            momentum.append(roc)
+        
+        momentum_arr = np.array(momentum)
+        
+        # Generate signals
+        signals = []
+        for i, mom in enumerate(momentum_arr):
+            if mom > threshold:
+                signals.append({"index": i + lookback, "type": "buy", "momentum": mom})
+            elif mom < -threshold:
+                signals.append({"index": i + lookback, "type": "sell", "momentum": mom})
+        
+        current_momentum = float(momentum_arr[-1]) if len(momentum_arr) > 0 else 0.0
+        
+        # Interpretation
+        if current_momentum > threshold:
+            interpretation = "Strong upward momentum"
+        elif current_momentum < -threshold:
+            interpretation = "Strong downward momentum"
+        else:
+            interpretation = "Weak/neutral momentum"
+        
+        return {
+            "momentum": momentum_arr.tolist(),
+            "signals": signals,
+            "current_momentum": current_momentum,
+            "lookback": lookback,
+            "threshold": threshold,
+            "interpretation": interpretation
+        }
+    
+    def pairs_rotation_strategy(self, pairs_data: Dict[str, Dict[str, List[float]]], 
+                                 rotation_window: int = 30) -> Dict:
+        """
+        Pairs rotation strategy: select best-performing pair based on multiple criteria.
+        
+        Args:
+            pairs_data: Dictionary mapping pair names to {"prices1": [...], "prices2": [...]}
+            rotation_window: Window for performance evaluation
+        
+        Returns:
+            Rankings and recommended pair to trade
+        """
+        if not pairs_data:
+            return {
+                "rankings": [],
+                "best_pair": None,
+                "reason": "No pairs data provided"
+            }
+        
+        pair_scores = []
+        
+        for pair_name, data in pairs_data.items():
+            prices1 = np.array(data.get("prices1", []))
+            prices2 = np.array(data.get("prices2", []))
+            
+            if len(prices1) < rotation_window or len(prices2) < rotation_window:
+                continue
+            
+            # Criteria 1: Correlation strength (want high correlation)
+            recent1 = prices1[-rotation_window:]
+            recent2 = prices2[-rotation_window:]
+            correlation = np.corrcoef(recent1, recent2)[0, 1]
+            
+            # Criteria 2: Spread stationarity proxy (lower variance is better)
+            spread = recent2 - (np.mean(recent2) / np.mean(recent1)) * recent1
+            spread_volatility = np.std(spread) / np.mean(np.abs(spread)) if np.mean(np.abs(spread)) > 0 else 1.0
+            
+            # Criteria 3: Recent mean reversion (spread returning to mean)
+            spread_mean = np.mean(spread)
+            recent_spread = spread[-5:]  # Last 5 observations
+            reversion_score = -np.mean(np.abs(recent_spread - spread_mean))  # Negative distance from mean
+            
+            # Combined score (higher is better)
+            # Normalize and weight criteria
+            score = (
+                0.4 * correlation +  # High correlation is good
+                0.3 * (1.0 / (1.0 + spread_volatility)) +  # Low volatility is good
+                0.3 * reversion_score  # Near mean is good
+            )
+            
+            pair_scores.append({
+                "pair_name": pair_name,
+                "score": float(score),
+                "correlation": float(correlation),
+                "spread_volatility": float(spread_volatility),
+                "reversion_score": float(reversion_score)
+            })
+        
+        # Sort by score descending
+        pair_scores.sort(key=lambda x: x["score"], reverse=True)
+        
+        best_pair = pair_scores[0] if pair_scores else None
+        
+        return {
+            "rankings": pair_scores,
+            "best_pair": best_pair["pair_name"] if best_pair else None,
+            "best_score": best_pair["score"] if best_pair else 0.0,
+            "reason": f"Highest combined score: {best_pair['score']:.3f}" if best_pair else "No valid pairs"
+        }
+    
+    def cross_momentum_pairs(self, prices1: List[float], prices2: List[float], 
+                              lookback: int = 20) -> Dict:
+        """
+        Cross-momentum pairs strategy: trade when one asset has stronger momentum.
+        
+        Args:
+            prices1: Price series for asset 1
+            prices2: Price series for asset 2
+            lookback: Lookback for momentum calculation
+        
+        Returns:
+            Signals based on momentum divergence
+        """
+        prices1_arr = np.array(prices1)
+        prices2_arr = np.array(prices2)
+        
+        if len(prices1_arr) < lookback + 1 or len(prices2_arr) < lookback + 1:
+            return {
+                "signals": [],
+                "momentum_spread": [],
+                "interpretation": "Insufficient data"
+            }
+        
+        # Calculate momentum for both assets
+        mom1 = []
+        mom2 = []
+        for i in range(lookback, len(prices1_arr)):
+            roc1 = (prices1_arr[i] - prices1_arr[i - lookback]) / prices1_arr[i - lookback]
+            roc2 = (prices2_arr[i] - prices2_arr[i - lookback]) / prices2_arr[i - lookback]
+            mom1.append(roc1)
+            mom2.append(roc2)
+        
+        mom1_arr = np.array(mom1)
+        mom2_arr = np.array(mom2)
+        
+        # Momentum spread (difference)
+        mom_spread = mom1_arr - mom2_arr
+        
+        # Generate signals based on momentum divergence
+        signals = []
+        threshold = 0.01  # 1% momentum difference
+        
+        for i, ms in enumerate(mom_spread):
+            if ms > threshold:
+                # Asset 1 has stronger momentum → Long asset1, short asset2
+                signals.append({"index": i + lookback, "type": "long_1_short_2", "mom_spread": ms})
+            elif ms < -threshold:
+                # Asset 2 has stronger momentum → Long asset2, short asset1
+                signals.append({"index": i + lookback, "type": "long_2_short_1", "mom_spread": ms})
+        
+        current_spread = float(mom_spread[-1]) if len(mom_spread) > 0 else 0.0
+        
+        return {
+            "momentum_spread": mom_spread.tolist(),
+            "signals": signals,
+            "current_mom_spread": current_spread,
+            "interpretation": "Asset 1 stronger" if current_spread > threshold else "Asset 2 stronger" if current_spread < -threshold else "Balanced momentum"
+        }
+

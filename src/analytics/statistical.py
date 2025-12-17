@@ -11,6 +11,8 @@ import pandas as pd
 from scipy import stats
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.api import OLS, add_constant
+from statsmodels.robust.robust_linear_model import RLM
+from sklearn.linear_model import HuberRegressor, TheilSenRegressor
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +39,16 @@ class StatisticalAnalytics:
             x_arr = np.asarray(x, dtype=float)
             y_arr = np.asarray(y, dtype=float)
 
-            if x_arr.shape != y_arr.shape or x_arr.size < 2:
-                logger.error("[OLS] Invalid input shapes x=%s y=%s", x_arr.shape, y_arr.shape)
+            # If shapes differ, attempt to align by trimming to the shortest series
+            if x_arr.size < 2 or y_arr.size < 2:
+                logger.error("[OLS] Insufficient data for OLS: x=%d, y=%d", x_arr.size, y_arr.size)
                 raise ValueError(f"Invalid input dimensions for OLS: x={x_arr.size}, y={y_arr.size}")
+
+            if x_arr.size != y_arr.size:
+                min_len = min(x_arr.size, y_arr.size)
+                logger.warning("[OLS] Input length mismatch detected (x=%d, y=%d). Trimming to %d.", x_arr.size, y_arr.size, min_len)
+                x_arr = x_arr[-min_len:]
+                y_arr = y_arr[-min_len:]
 
             # Zero variance handling
             if np.nanstd(x_arr) == 0 or np.nanstd(y_arr) == 0:
@@ -255,6 +264,125 @@ class StatisticalAnalytics:
             }
         except Exception:
             logger.exception("Cointegration test failed")
+            raise
+
+    @staticmethod
+    def robust_regression_huber(x: List[float], y: List[float], epsilon: float = 1.35) -> Dict[str, Any]:
+        """
+        Perform robust regression using Huber loss (less sensitive to outliers than OLS).
+        
+        Args:
+            x: Independent variable
+            y: Dependent variable
+            epsilon: Huber loss threshold (default 1.35)
+        
+        Returns:
+            Dictionary with hedge_ratio, alpha, and robustness metrics
+        """
+        try:
+            x_arr = np.asarray(x, dtype=float).reshape(-1, 1)
+            y_arr = np.asarray(y, dtype=float)
+            
+            if x_arr.size < 2 or y_arr.size < 2:
+                raise ValueError(f"Insufficient data for Huber regression: x={x_arr.size}, y={y_arr.size}")
+            
+            if x_arr.size != y_arr.size:
+                min_len = min(x_arr.size, y_arr.size)
+                logger.warning(f"[Huber] Length mismatch: x={x_arr.size}, y={y_arr.size}. Trimming to {min_len}.")
+                x_arr = x_arr[-min_len:]
+                y_arr = y_arr[-min_len:]
+            
+            # Fit Huber regressor
+            huber = HuberRegressor(epsilon=epsilon, max_iter=200)
+            huber.fit(x_arr, y_arr)
+            
+            hedge_ratio = float(huber.coef_[0])
+            alpha = float(huber.intercept_)
+            
+            # Compute residuals and R²
+            y_pred = huber.predict(x_arr)
+            residuals = y_arr - y_pred
+            ss_res = np.sum(residuals ** 2)
+            ss_tot = np.sum((y_arr - np.mean(y_arr)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+            
+            # Identify outliers (samples with high residual)
+            outlier_threshold = epsilon * np.std(residuals)
+            outlier_mask = np.abs(residuals) > outlier_threshold
+            n_outliers = int(np.sum(outlier_mask))
+            
+            result = {
+                "hedge_ratio": hedge_ratio,
+                "alpha": alpha,
+                "r_squared": float(r_squared),
+                "residual_std": float(np.std(residuals)),
+                "outliers_detected": n_outliers,
+                "outlier_percentage": float(100.0 * n_outliers / len(residuals)),
+                "observations": int(len(y_arr)),
+                "method": "Huber",
+                "epsilon": float(epsilon)
+            }
+            
+            logger.info(f"[Huber] beta={hedge_ratio:.6f}, alpha={alpha:.6f}, outliers={n_outliers}")
+            return result
+            
+        except Exception:
+            logger.exception("[Huber] Regression failed")
+            raise
+    
+    @staticmethod
+    def robust_regression_theil_sen(x: List[float], y: List[float]) -> Dict[str, Any]:
+        """
+        Perform Theil-Sen robust regression (median-based, highly resistant to outliers).
+        
+        Args:
+            x: Independent variable
+            y: Dependent variable
+        
+        Returns:
+            Dictionary with hedge_ratio, alpha, and robustness metrics
+        """
+        try:
+            x_arr = np.asarray(x, dtype=float).reshape(-1, 1)
+            y_arr = np.asarray(y, dtype=float)
+            
+            if x_arr.size < 2 or y_arr.size < 2:
+                raise ValueError(f"Insufficient data for Theil-Sen: x={x_arr.size}, y={y_arr.size}")
+            
+            if x_arr.size != y_arr.size:
+                min_len = min(x_arr.size, y_arr.size)
+                logger.warning(f"[TheilSen] Length mismatch: x={x_arr.size}, y={y_arr.size}. Trimming to {min_len}.")
+                x_arr = x_arr[-min_len:]
+                y_arr = y_arr[-min_len:]
+            
+            # Fit Theil-Sen regressor
+            theil_sen = TheilSenRegressor(max_iter=200, random_state=42)
+            theil_sen.fit(x_arr, y_arr)
+            
+            hedge_ratio = float(theil_sen.coef_[0])
+            alpha = float(theil_sen.intercept_)
+            
+            # Compute residuals and R²
+            y_pred = theil_sen.predict(x_arr)
+            residuals = y_arr - y_pred
+            ss_res = np.sum(residuals ** 2)
+            ss_tot = np.sum((y_arr - np.mean(y_arr)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+            
+            result = {
+                "hedge_ratio": hedge_ratio,
+                "alpha": alpha,
+                "r_squared": float(r_squared),
+                "residual_std": float(np.std(residuals)),
+                "observations": int(len(y_arr)),
+                "method": "Theil-Sen"
+            }
+            
+            logger.info(f"[TheilSen] beta={hedge_ratio:.6f}, alpha={alpha:.6f}")
+            return result
+            
+        except Exception:
+            logger.exception("[TheilSen] Regression failed")
             raise
 
 

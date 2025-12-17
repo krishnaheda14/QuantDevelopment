@@ -21,7 +21,12 @@ st.set_page_config(
     page_title="GEMSCAP Quant Analytics",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/gemscap/quant',
+        'Report a bug': None,
+        'About': "GEMSCAP Quant Analytics v1.0 - Real-time crypto pairs trading system"
+    }
 )
 
 # Compatibility helper: safe rerun across Streamlit versions
@@ -58,6 +63,11 @@ from src.core.strategy_engine import StrategyEngine
 from src.analytics.indicators import TechnicalIndicators
 from src.analytics.statistical import StatisticalAnalytics
 from src.analytics.backtester import Backtester
+from src.analytics.kalman_filter import KalmanHedgeRatio
+from src.analytics.liquidity_analysis import LiquidityAnalyzer
+from src.analytics.microstructure import MicrostructureAnalyzer
+from src.analytics.correlation_matrix import CorrelationMatrix
+from src.analytics.timeseries_table import TimeSeriesStatsTable
 
 # Initialize session state
 if 'data_manager' not in st.session_state:
@@ -66,9 +76,15 @@ if 'data_manager' not in st.session_state:
     st.session_state.indicators = TechnicalIndicators()
     st.session_state.stats = StatisticalAnalytics()
     st.session_state.backtester = Backtester()
+    st.session_state.kalman = KalmanHedgeRatio()
+    st.session_state.liquidity = LiquidityAnalyzer()
+    st.session_state.microstructure = MicrostructureAnalyzer()
+    st.session_state.corr_matrix = CorrelationMatrix()
+    st.session_state.timeseries_table = TimeSeriesStatsTable()
     st.session_state.alerts = []
     st.session_state.start_time = time.time()
     st.session_state.refresh_count = 0
+    st.session_state.adf_results = {}
 
 # Check if we should auto-refresh (first 5 minutes or until we have data)
 elapsed_time = time.time() - st.session_state.start_time
@@ -96,6 +112,21 @@ with st.sidebar:
     st.subheader("Pair Selection")
     symbol1 = st.selectbox("Symbol 1", symbols, index=0)
     symbol2 = st.selectbox("Symbol 2", symbols, index=1)
+    
+    # Show ADF status for selected symbols in sidebar (after selection)
+    adf_results = st.session_state.get('adf_results', {})
+    if symbol1 in adf_results:
+        res = adf_results[symbol1]
+        if res.get('is_stationary'):
+            st.success(f"{symbol1} ADF: ✅ Stationary (p={res.get('p_value'):.4f})")
+        else:
+            st.warning(f"{symbol1} ADF: ❌ Non-stationary (p={res.get('p_value'):.4f})")
+    if symbol2 in adf_results:
+        res = adf_results[symbol2]
+        if res.get('is_stationary'):
+            st.success(f"{symbol2} ADF: ✅ Stationary (p={res.get('p_value'):.4f})")
+        else:
+            st.warning(f"{symbol2} ADF: ❌ Non-stationary (p={res.get('p_value'):.4f})")
     
     st.markdown("---")
     st.subheader("Time Window")
@@ -132,7 +163,7 @@ with st.sidebar:
     
     st.markdown("---")
     # Apply changes button: only commit pending settings when user clicks
-    if st.button("Apply Changes", use_container_width=True):
+    if st.button("Apply Changes", width='stretch'):
         st.session_state.applied_config = {
             'interval': st.session_state.get('pending_interval', st.session_state.applied_config.get('interval', '1m')),
             'zscore_entry': st.session_state.get('pending_zscore_entry', st.session_state.applied_config.get('zscore_entry', 2.0)),
@@ -143,10 +174,10 @@ with st.sidebar:
         # Use safe rerun helper to support multiple Streamlit versions
         safe_rerun()
 
-    if st.button("🔄 Refresh Data", use_container_width=True):
+    if st.button("🔄 Refresh Data", width='stretch'):
         safe_rerun()
 
-    if st.button("📥 Export All", use_container_width=True):
+    if st.button("📥 Export All", width='stretch'):
         st.session_state.export_trigger = True
 
 # Data accumulation status banner
@@ -172,9 +203,9 @@ def fetch_bars(dm, symbol, interval, lookback_min):
         df = df.set_index('datetime').sort_index()
 
         # Create 1s OHLC with forward-fill for seconds with no trades
-        price_ohlc = df['price'].resample('1S').agg(['first', 'max', 'min', 'last'])
-        vol = df['quantity'].resample('1S').sum().fillna(0)
-        price_ohlc = price_ohlc.fillna(method='ffill')
+        price_ohlc = df['price'].resample('1s').agg(['first', 'max', 'min', 'last'])
+        vol = df['quantity'].resample('1s').sum().fillna(0)
+        price_ohlc = price_ohlc.ffill()
         price_ohlc = price_ohlc.fillna(0)
         price_ohlc.columns = ['open', 'high', 'low', 'close']
         price_ohlc['volume'] = vol
@@ -182,7 +213,7 @@ def fetch_bars(dm, symbol, interval, lookback_min):
 
         # If requested >1s, further aggregate
         if sec > 1:
-            agg = price_ohlc.set_index('datetime').resample(f"{sec}S").agg({
+            agg = price_ohlc.set_index('datetime').resample(f"{sec}s").agg({
                 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
             }).dropna().reset_index()
         else:
@@ -252,15 +283,45 @@ else:
 
 st.markdown("---")
 
+# Navigation Helper
+with st.expander("📚 Navigation Guide - Click to expand", expanded=False):
+    nav_col1, nav_col2, nav_col3 = st.columns(3)
+    
+    with nav_col1:
+        st.markdown("**📊 Core Analysis**")
+        st.markdown("- 📈 Spread Analysis")
+        st.markdown("- 🎯 Strategy Signals")
+        st.markdown("- 📊 Statistical Tests")
+        st.markdown("- 🔍 Backtesting")
+    
+    with nav_col2:
+        st.markdown("**🔬 Advanced Analytics**")
+        st.markdown("- 🧮 Kalman & Robust Regression")
+        st.markdown("- 💧 Liquidity & Heatmap")
+        st.markdown("- 🔬 Microstructure")
+        st.markdown("- 🔗 Correlation Matrix")
+    
+    with nav_col3:
+        st.markdown("**⚙️ System & Export**")
+        st.markdown("- 🔔 Alerts")
+        st.markdown("- ⚙️ System Status")
+        st.markdown("- 🔎 Quick Compare")
+        st.markdown("- 📋 Time-Series Table (CSV Export)")
+
 # Main content
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
     "📈 Spread Analysis",
     "🎯 Strategy Signals", 
     "📊 Statistical Tests",
     "🔍 Backtesting",
     "🔔 Alerts",
     "⚙️ System",
-    "🔎 Quick Compare"
+    "🔎 Quick Compare",
+    "🧮 Kalman & Robust Regression",
+    "💧 Liquidity & Heatmap",
+    "🔬 Microstructure",
+    "🔗 Correlation Matrix",
+    "📋 Time-Series Stats Table"
 ])
 
 # Tab 1: Spread Analysis
@@ -390,14 +451,23 @@ with tab1:
         fig.add_hline(y=-zscore_entry, line_dash="dash", line_color="green", row=2, col=1)
         fig.add_hline(y=0, line_dash="dot", line_color="gray", row=2, col=1)
         
-        # Price series
-        fig.add_trace(go.Scatter(x=timestamps, y=prices1, name=symbol1, 
+        # Price series - normalize both to a common starting point for comparable scale
+        try:
+            base1 = prices1[0] if prices1 and prices1[0] != 0 else 1.0
+            base2 = prices2[0] if prices2 and prices2[0] != 0 else 1.0
+            norm1 = [p / base1 * 100.0 for p in prices1]
+            norm2 = [p / base2 * 100.0 for p in prices2]
+        except Exception:
+            norm1 = prices1
+            norm2 = prices2
+
+        fig.add_trace(go.Scatter(x=timestamps, y=norm1, name=f"{symbol1} (norm)", 
                                 line=dict(color='orange')), row=3, col=1)
-        fig.add_trace(go.Scatter(x=timestamps, y=prices2, name=symbol2,
+        fig.add_trace(go.Scatter(x=timestamps, y=norm2, name=f"{symbol2} (norm)",
                                 line=dict(color='cyan')), row=3, col=1)
         
         fig.update_layout(height=800, showlegend=True, hovermode='x unified')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         
         # What-if Analysis
         st.subheader("🔬 What-If Analysis")
@@ -501,7 +571,14 @@ with tab2:
                            subplot_titles=("Price & Bollinger", "RSI", "MACD"))
         
         timestamps = [d['timestamp'] for d in data1]
-        fig.add_trace(go.Scatter(x=timestamps, y=prices, name="Price"), row=1, col=1)
+        # Normalize price series so indicators and visual comparison share a common scale
+        try:
+            base_price = prices[0] if prices and prices[0] != 0 else 1.0
+            norm_prices = [p / base_price * 100.0 for p in prices]
+        except Exception:
+            norm_prices = prices
+
+        fig.add_trace(go.Scatter(x=timestamps, y=norm_prices, name="Price (norm)"), row=1, col=1)
         fig.add_trace(go.Scatter(x=timestamps, y=bb_data['upper'], name="BB Upper", line=dict(dash='dash')), row=1, col=1)
         fig.add_trace(go.Scatter(x=timestamps, y=bb_data['lower'], name="BB Lower", line=dict(dash='dash')), row=1, col=1)
         
@@ -515,7 +592,7 @@ with tab2:
             fig.add_trace(go.Bar(x=timestamps[-len(macd_data['histogram']):], y=macd_data['histogram'], name="Histogram"), row=3, col=1)
         
         fig.update_layout(height=800, showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.warning(f"⏳ Need at least 50 bars for indicator analysis (currently: {len(data1)} bars)")
         st.info("This tab shows RSI, MACD, and Bollinger Band indicators. Collecting more data...")
@@ -534,10 +611,8 @@ with tab3:
                 adf_result = st.session_state.stats.adf_test(prices)
                 st.metric("ADF Statistic", f"{adf_result['adf_statistic']:.4f}")
                 st.metric("P-Value", f"{adf_result['p_value']:.4f}")
-                if adf_result['is_stationary']:
-                    st.success("✅ Stationary")
-                else:
-                    st.warning("❌ Non-stationary")
+                # Store ADF result in session state and avoid printing status here
+                st.session_state.adf_results[symbol1] = adf_result
                 with st.expander("Details"):
                     st.json(adf_result)
             except Exception as e:
@@ -568,6 +643,82 @@ with tab7:
 
     dm = st.session_state.data_manager
 
+    # Uploader: allow user to import historical OHLC CSV and persist to DB
+    with st.expander("📁 Upload OHLC CSV (optional)", expanded=False):
+        st.markdown("Upload a CSV with columns: timestamp, open, high, low, close, volume.\nTimestamp may be epoch ms or ISO datetime.")
+        upload_symbol = st.selectbox("Target Symbol for Upload", options=symbols, index=0)
+        upload_interval = st.selectbox("Target Interval", options=['1m', '5m'], index=0)
+        timestamp_format = st.selectbox("Timestamp format", options=['epoch_ms', 'iso'], index=0)
+        uploaded_file = st.file_uploader("Choose OHLC CSV file", type=['csv'])
+
+        if uploaded_file is not None:
+            try:
+                uploaded_bytes = uploaded_file.read()
+                uploaded_file.seek(0)
+                df_upload = pd.read_csv(io.BytesIO(uploaded_bytes))
+
+                # Validate required columns
+                required = {'timestamp', 'open', 'high', 'low', 'close', 'volume'}
+                if not required.issubset(set(df_upload.columns.str.lower())):
+                    st.error(f"Missing required columns. Required: {sorted(required)}")
+                else:
+                    # Normalize column names
+                    df_upload.columns = [c.lower() for c in df_upload.columns]
+
+                    # Parse timestamp
+                    if timestamp_format == 'epoch_ms':
+                        df_upload['timestamp'] = df_upload['timestamp'].astype('int64')
+                    else:
+                        df_upload['timestamp'] = pd.to_datetime(df_upload['timestamp']).astype('int64') // 1_000_000
+
+                    # Keep only required columns and drop duplicates
+                    df_upload = df_upload[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+                    df_upload = df_upload.drop_duplicates(subset=['timestamp'])
+
+                    # Convert numeric types
+                    for col in ['open','high','low','close','volume']:
+                        df_upload[col] = pd.to_numeric(df_upload[col], errors='coerce')
+
+                    # Ensure timestamps are integers
+                    df_upload = df_upload.dropna()
+                    df_upload['timestamp'] = df_upload['timestamp'].astype(int)
+
+                    # Persist to SQLite (1m table exists; 5m table created in DataManager)
+                    import sqlite3
+                    conn = sqlite3.connect(st.session_state.data_manager.db_path)
+                    cursor = conn.cursor()
+
+                    inserted = 0
+                    for _, row in df_upload.iterrows():
+                        try:
+                            if upload_interval == '1m':
+                                cursor.execute('''INSERT OR REPLACE INTO ohlc_1m (symbol, timestamp, open, high, low, close, volume, tick_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                               (upload_symbol, int(row['timestamp']), float(row['open']), float(row['high']), float(row['low']), float(row['close']), float(row['volume']), 0))
+                                # update in-memory deque for quick access
+                                bar = {'symbol': upload_symbol, 'timestamp': int(row['timestamp']), 'open': float(row['open']), 'high': float(row['high']), 'low': float(row['low']), 'close': float(row['close']), 'volume': float(row['volume']), 'tick_count': 0}
+                                try:
+                                    st.session_state.data_manager.ohlc_1m[upload_symbol].append(bar)
+                                except Exception:
+                                    pass
+                            else:
+                                cursor.execute('''INSERT OR REPLACE INTO ohlc_5m (symbol, timestamp, open, high, low, close, volume, tick_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                                               (upload_symbol, int(row['timestamp']), float(row['open']), float(row['high']), float(row['low']), float(row['close']), float(row['volume']), 0))
+                                bar = {'symbol': upload_symbol, 'timestamp': int(row['timestamp']), 'open': float(row['open']), 'high': float(row['high']), 'low': float(row['low']), 'close': float(row['close']), 'volume': float(row['volume']), 'tick_count': 0}
+                                try:
+                                    st.session_state.data_manager.ohlc_5m[upload_symbol].append(bar)
+                                except Exception:
+                                    pass
+                            inserted += 1
+                        except Exception as e:
+                            print(f"[Upload] row insert error: {e}")
+                    conn.commit()
+                    conn.close()
+
+                    st.success(f"Imported {inserted} OHLC rows into {upload_symbol} ({upload_interval})")
+                    st.write(df_upload.head(10))
+            except Exception as e:
+                st.error(f"Failed to parse uploaded CSV: {e}")
+
     # Try OHLC first, otherwise fall back to ticks
     df1 = _build_df_from_ohlc(get_bars(dm, symbol1, agg_interval, agg_lookback))
     if df1.empty:
@@ -592,7 +743,7 @@ with tab7:
                 if vol_y is not None:
                     fig1.add_trace(go.Bar(x=df1['datetime'], y=vol_y, name='Volume', marker_color='lightblue'), row=2, col=1)
                 fig1.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig1, use_container_width=True)
+                st.plotly_chart(fig1, width='stretch')
             else:
                 st.info("No 1m bars; showing recent ticks (if any)")
                 st.write(df1.tail(50))
@@ -607,7 +758,7 @@ with tab7:
                 if vol_y2 is not None:
                     fig2.add_trace(go.Bar(x=df2['datetime'], y=vol_y2, name='Volume', marker_color='lightgreen'), row=2, col=1)
                 fig2.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width='stretch')
             else:
                 st.info("No 1m bars; showing recent ticks (if any)")
                 st.write(df2.tail(50))
@@ -636,10 +787,8 @@ with tab7:
                 adf_result = st.session_state.stats.adf_test(prices)
                 st.metric("ADF Statistic", f"{adf_result['adf_statistic']:.4f}")
                 st.metric("P-Value", f"{adf_result['p_value']:.4f}")
-                if adf_result['is_stationary']:
-                    st.success("✅ Stationary")
-                else:
-                    st.warning("❌ Non-stationary")
+                # Store ADF result in session state and avoid printing status here
+                st.session_state.adf_results[symbol2] = adf_result
                 with st.expander("Details"):
                     st.json(adf_result)
             except Exception as e:
@@ -649,8 +798,15 @@ with tab7:
     if len(data1) > 20 and len(data2) > 20:
         st.subheader("Cointegration Test")
         try:
-            prices1 = [d['close'] for d in data1]
-            prices2 = [d['close'] for d in data2]
+            # Align by timestamp to ensure equal-length series
+            map1 = {int(d['timestamp']): d['close'] for d in data1}
+            map2 = {int(d['timestamp']): d['close'] for d in data2}
+            common_ts = sorted(set(map1.keys()) & set(map2.keys()))
+            if len(common_ts) < 20:
+                st.warning(f"Not enough aligned bars for cointegration test (need 20+, have {len(common_ts)}).")
+                raise ValueError("Insufficient aligned data")
+            prices1 = [map1[t] for t in common_ts]
+            prices2 = [map2[t] for t in common_ts]
             coint_result = st.session_state.stats.cointegration_test(prices1, prices2)
             
             col1, col2, col3 = st.columns(3)
@@ -706,7 +862,7 @@ with tab4:
                 fig.add_trace(go.Scatter(x=timestamps, y=results['equity_curve'], 
                                         name="Portfolio Value", fill='tozeroy'))
                 fig.update_layout(title="Equity Curve", height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # Trade log
                 st.subheader("Trade History")
@@ -771,7 +927,7 @@ with tab6:
     if recent_data:
         # show most recent 10 bars
         df = pd.DataFrame(recent_data[-10:])
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
     
     # Export functionality
     if st.session_state.get('export_trigger', False):
@@ -804,6 +960,423 @@ with tab6:
         )
         
         st.session_state.export_trigger = False
+
+# Tab 8: Kalman Filter & Robust Regression
+with tab8:
+    st.header("Advanced Regression Methods")
+    
+    if len(data1) > 50 and len(data2) > 50:
+        # Align data first
+        map1 = {int(d['timestamp']): d['close'] for d in data1}
+        map2 = {int(d['timestamp']): d['close'] for d in data2}
+        common_ts = sorted(set(map1.keys()) & set(map2.keys()))
+        
+        if len(common_ts) >= 50:
+            prices1 = [map1[t] for t in common_ts]
+            prices2 = [map2[t] for t in common_ts]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("🧮 Kalman Filter (Dynamic Hedge)")
+                try:
+                    kalman_result = st.session_state.kalman.estimate(prices1, prices2)
+                    st.metric("Current Hedge Ratio", f"{kalman_result['current_hedge_ratio']:.4f}")
+                    st.metric("Std Dev", f"±{kalman_result['current_std']:.4f}")
+                    
+                    # Plot dynamic hedge ratio
+                    fig = go.Figure()
+                    hedge_timestamps = common_ts[-len(kalman_result['hedge_ratios']):]
+                    fig.add_trace(go.Scatter(x=hedge_timestamps, y=kalman_result['hedge_ratios'], 
+                                            name='Kalman Hedge', line=dict(color='purple')))
+                    fig.update_layout(title="Dynamic Hedge Ratio (Kalman Filter)", height=300)
+                    st.plotly_chart(fig, width='stretch')
+                    
+                    with st.expander("Kalman Details"):
+                        st.json(kalman_result)
+                except Exception as e:
+                    st.error(f"Kalman filter error: {e}")
+            
+            with col2:
+                st.subheader("🛡️ Robust Regression")
+                try:
+                    # Compute OLS, Huber, and Theil-Sen
+                    ols_res = st.session_state.stats.ols_regression(prices1, prices2)
+                    huber_res = st.session_state.stats.robust_regression_huber(prices1, prices2)
+                    theil_res = st.session_state.stats.robust_regression_theil_sen(prices1, prices2)
+                    
+                    # Comparison table
+                    comparison = pd.DataFrame({
+                        "Method": ["OLS", "Huber", "Theil-Sen"],
+                        "Hedge Ratio": [ols_res['hedge_ratio'], huber_res['hedge_ratio'], theil_res['hedge_ratio']],
+                        "Alpha": [ols_res['alpha'], huber_res['alpha'], theil_res['alpha']],
+                        "R²": [ols_res['r_squared'], huber_res['r_squared'], theil_res['r_squared']]
+                    })
+                    st.dataframe(comparison, width='stretch')
+                    
+                    if huber_res.get('outliers_detected', 0) > 0:
+                        st.warning(f"⚠️ Huber detected {huber_res['outliers_detected']} outliers ({huber_res['outlier_percentage']:.1f}%)")
+                    else:
+                        st.success("✅ No significant outliers detected")
+                    
+                    st.info("**Tip:** Use Huber or Theil-Sen when data has outliers or fat tails.")
+                except Exception as e:
+                    st.error(f"Robust regression error: {e}")
+        else:
+            st.warning(f"Need at least 50 aligned bars (have {len(common_ts)})")
+    else:
+        st.warning("Collecting data for Kalman filter and robust regression...")
+
+# Tab 9: Liquidity & Heatmap
+with tab9:
+    st.header("Liquidity Analysis & Heatmap")
+    
+    dm = st.session_state.data_manager
+    
+    # Get recent ticks for liquidity analysis
+    ticks1 = list(dm.ticks.get(symbol1, []))[-1000:]
+    ticks2 = list(dm.ticks.get(symbol2, []))[-1000:]
+    
+    if len(ticks1) > 50:
+        st.subheader(f"💧 {symbol1} Liquidity")
+        
+        try:
+            prices = [t['price'] for t in ticks1]
+            volumes = [t['quantity'] for t in ticks1]
+            timestamps = [t['timestamp'] for t in ticks1]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Volume profile
+                vp = st.session_state.liquidity.compute_volume_profile(prices, volumes, n_bins=30)
+                st.metric("POC (Point of Control)", f"${vp['poc_price']:.2f}")
+                st.metric("Value Area", f"${vp['value_area_low']:.2f} - ${vp['value_area_high']:.2f}")
+                
+                # Plot volume profile
+                fig = go.Figure()
+                fig.add_trace(go.Bar(y=vp['bin_centers'], x=vp['volume_by_bin'], 
+                                    orientation='h', name='Volume'))
+                fig.add_hline(y=vp['poc_price'], line_dash='dash', line_color='red', 
+                             annotation_text='POC')
+                fig.update_layout(title="Volume Profile", height=400, 
+                                 yaxis_title="Price", xaxis_title="Volume")
+                st.plotly_chart(fig, width='stretch')
+            
+            with col2:
+                # Liquidity heatmap
+                hm = st.session_state.liquidity.liquidity_heatmap_data(
+                    timestamps, prices, volumes, time_bins=30, price_bins=25
+                )
+                
+                fig = go.Figure(data=go.Heatmap(
+                    z=hm['heatmap_matrix'],
+                    x=hm['time_labels'],
+                    y=hm['price_labels'],
+                    colorscale='Viridis'
+                ))
+                fig.update_layout(title="Liquidity Heatmap (Volume Intensity)", height=400,
+                                 xaxis_title="Time (ms)", yaxis_title="Price")
+                st.plotly_chart(fig, width='stretch')
+        
+        except Exception as e:
+            st.error(f"Liquidity analysis error: {e}")
+    else:
+        st.info(f"Collecting tick data for liquidity analysis... (have {len(ticks1)} ticks)")
+
+# Tab 10: Microstructure Analytics
+with tab10:
+    st.header("🔬 Market Microstructure")
+    
+    ticks1 = list(dm.ticks.get(symbol1, []))[-500:]
+    
+    if len(ticks1) > 50:
+        try:
+            prices = [t['price'] for t in ticks1]
+            volumes = [t['quantity'] for t in ticks1]
+            timestamps = [t['timestamp'] for t in ticks1]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Order Flow (Tick Rule)")
+                tc = st.session_state.microstructure.classify_trades_tick_rule(prices)
+                
+                st.metric("Order Flow Imbalance", f"{tc['order_flow_imbalance']:.3f}")
+                st.caption(tc['interpretation'])
+                
+                # Pie chart
+                fig = go.Figure(data=[go.Pie(
+                    labels=['Buyer-initiated', 'Seller-initiated', 'Neutral'],
+                    values=[tc['buyer_initiated'], tc['seller_initiated'], tc['neutral']],
+                    marker_colors=['green', 'red', 'gray']
+                )])
+                fig.update_layout(title="Trade Classification", height=300)
+                st.plotly_chart(fig, width='stretch')
+                
+                # Rolling OFI
+                if len(prices) >= 20:
+                    rofi = st.session_state.microstructure.rolling_order_flow(prices, volumes, window=20)
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Scatter(y=rofi['rolling_ofi'], name='Rolling OFI', 
+                                             line=dict(color='blue')))
+                    fig2.add_hline(y=0, line_dash='dash', line_color='gray')
+                    fig2.update_layout(title="Rolling Order Flow Imbalance", height=250)
+                    st.plotly_chart(fig2, width='stretch')
+            
+            with col2:
+                st.subheader("Trade Intensity & VWAP")
+                
+                # Trade intensity
+                ti = st.session_state.microstructure.trade_intensity(timestamps, window_ms=60000)
+                st.metric("Trades per Minute", f"{ti['trades_per_window']:.1f}")
+                st.metric("Mean Inter-arrival", f"{ti['mean_inter_arrival_ms']:.1f} ms")
+                
+                # VWAP
+                vwap = st.session_state.microstructure.vwap_deviation(prices, volumes)
+                st.metric("VWAP", f"${vwap['vwap']:.2f}")
+                st.metric("Current vs VWAP", f"{vwap['deviation_pct']:+.2f}%", 
+                         delta=vwap['interpretation'])
+                
+                # Effective spread
+                es = st.session_state.microstructure.effective_spread(prices)
+                st.metric("Mean Effective Spread", f"{es['mean_spread_pct']:.3f}%")
+                
+                st.info("**Microstructure insights:** Low spreads and high trade intensity indicate good liquidity.")
+        
+        except Exception as e:
+            st.error(f"Microstructure analysis error: {e}")
+    else:
+        st.info(f"Collecting tick data... (have {len(ticks1)} ticks, need 50+)")
+
+# Tab 11: Correlation Matrix
+with tab11:
+    st.header("🔗 Cross-Product Correlation Matrix")
+    
+    # Get all available symbols
+    all_symbols = st.session_state.data_manager.get_available_symbols()
+    
+    # Let user select symbols for matrix
+    selected_symbols = st.multiselect(
+        "Select symbols for correlation matrix (3-10 recommended)",
+        all_symbols,
+        default=all_symbols[:min(5, len(all_symbols))]
+    )
+    
+    if len(selected_symbols) >= 2:
+        # Fetch data for selected symbols
+        price_series = {}
+        for sym in selected_symbols:
+            bars = get_bars(dm, sym, agg_interval, agg_lookback)
+            if len(bars) > 20:
+                price_series[sym] = [d['close'] for d in bars]
+        
+        if len(price_series) >= 2:
+            try:
+                # Compute correlation matrix
+                corr_result = st.session_state.corr_matrix.compute_correlation_matrix(
+                    price_series, method='pearson'
+                )
+                
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    # Heatmap
+                    hm_data = st.session_state.corr_matrix.correlation_heatmap_data(
+                        corr_result['correlation_matrix'],
+                        corr_result['symbols']
+                    )
+                    
+                    fig = go.Figure(data=go.Heatmap(
+                        z=hm_data['matrix'],
+                        x=hm_data['x_labels'],
+                        y=hm_data['y_labels'],
+                        colorscale='RdBu',
+                        zmid=0,
+                        text=np.round(hm_data['matrix'], 2),
+                        texttemplate='%{text}',
+                        textfont={"size":10}
+                    ))
+                    fig.update_layout(title="Correlation Matrix", height=500)
+                    st.plotly_chart(fig, width='stretch')
+                
+                with col2:
+                    st.subheader("Top Pairs")
+                    
+                    best = corr_result['best_correlated']
+                    st.success(f"**Highest:** {best['symbol1']}-{best['symbol2']}: {best['correlation']:.3f}")
+                    
+                    worst = corr_result['worst_correlated']
+                    st.error(f"**Lowest:** {worst['symbol1']}-{worst['symbol2']}: {worst['correlation']:.3f}")
+                    
+                    st.markdown("---")
+                    st.subheader("All Pairs (by correlation)")
+                    pairs_df = pd.DataFrame(corr_result['pairs'][:15])  # Top 15
+                    st.dataframe(pairs_df, width='stretch')
+            
+            except Exception as e:
+                st.error(f"Correlation matrix error: {e}")
+        else:
+            st.warning("Not enough data for selected symbols")
+    else:
+        st.info("Select at least 2 symbols to compute correlation matrix")
+
+# Tab 12: Time-Series Stats Table
+with tab12:
+    st.header("📋 Time-Series Statistics Table")
+    
+    st.markdown("""
+    Comprehensive time-series table with all analytics features at each timestamp.
+    Includes prices, spread, z-score, returns, correlation, volume, indicators, and trading signals.
+    """)
+    
+    if len(data1) > 20 and len(data2) > 20:
+        try:
+            # Generate stats table
+            with st.spinner("Generating time-series table..."):
+                stats_df = st.session_state.timeseries_table.generate_stats_table(
+                    data1, data2, symbol1, symbol2, 
+                    hedge_ratio=ols_result['hedge_ratio'] if 'ols_result' in locals() else 1.0,
+                    include_indicators=len(data1) >= 50
+                )
+            
+            # Summary metrics at top
+            summary = st.session_state.timeseries_table.generate_summary_stats(stats_df, symbol1, symbol2)
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Observations", summary['time_period']['observations'])
+                st.metric("Duration (min)", f"{summary['time_period']['duration_minutes']:.1f}")
+            with col2:
+                st.metric("Current Z-Score", f"{summary['zscore']['current']:.3f}")
+                st.metric("Spread Mean", f"{summary['spread']['mean']:.4f}")
+            with col3:
+                st.metric("Overall Correlation", f"{summary['correlation']['overall']:.3f}")
+                st.metric("Current Rolling Corr", f"{summary['correlation']['current_rolling']:.3f}")
+            with col4:
+                st.metric("Long Signals", summary['signals']['long_spread_count'])
+                st.metric("Short Signals", summary['signals']['short_spread_count'])
+            
+            st.markdown("---")
+            
+            # Interactive table controls
+            col_a, col_b, col_c = st.columns(3)
+            
+            with col_a:
+                show_rows = st.selectbox("Show rows", [10, 25, 50, 100, "All"], index=1)
+            
+            with col_b:
+                sort_by = st.selectbox("Sort by", 
+                    ['datetime', 'zscore', 'spread', f'{symbol1}_close', f'{symbol2}_close', 'rolling_corr_20'])
+            
+            with col_c:
+                sort_order = st.radio("Order", ['Descending', 'Ascending'], horizontal=True)
+            
+            # Apply sorting
+            ascending = (sort_order == 'Ascending')
+            stats_df_sorted = stats_df.sort_values(by=sort_by, ascending=ascending)
+            
+            # Display table
+            if show_rows == "All":
+                display_df = stats_df_sorted
+            else:
+                display_df = stats_df_sorted.head(int(show_rows))
+            
+            st.dataframe(
+                display_df.style.format({
+                    col: "{:.6f}" for col in display_df.select_dtypes(include=[np.number]).columns
+                }),
+                width='stretch',
+                height=400
+            )
+            
+            # Column selector for export
+            st.markdown("### 📥 Export Options")
+            
+            col_export_1, col_export_2 = st.columns(2)
+            
+            with col_export_1:
+                export_cols = st.multiselect(
+                    "Select columns to export (leave empty for all)",
+                    options=list(stats_df.columns),
+                    default=[]
+                )
+            
+            with col_export_2:
+                export_format = st.radio("Export format", ['CSV', 'JSON'], horizontal=True)
+            
+            # Export buttons
+            export_df = stats_df[export_cols] if export_cols else stats_df
+            # Ensure CSV data available regardless of selected export format (prevents undefined variable)
+            try:
+                csv_data = export_df.to_csv(index=False)
+            except Exception:
+                # Fallback: convert to CSV with simple str() representation
+                csv_data = str(export_df)
+            
+            col_btn_1, col_btn_2, col_btn_3 = st.columns(3)
+            
+            with col_btn_1:
+                if export_format == 'CSV':
+                    csv_data = st.session_state.timeseries_table.export_to_csv(export_df)
+                    st.download_button(
+                        label="📥 Download Full Table (CSV)",
+                        data=csv_data,
+                        file_name=f"timeseries_stats_{symbol1}_{symbol2}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    json_data = export_df.to_json(orient='records', indent=2, date_format='iso')
+                    st.download_button(
+                        label="📥 Download Full Table (JSON)",
+                        data=json_data,
+                        file_name=f"timeseries_stats_{symbol1}_{symbol2}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+            
+            with col_btn_2:
+                # Summary stats export
+                summary_json = json.dumps(summary, indent=2)
+                st.download_button(
+                    label="📊 Download Summary Stats",
+                    data=summary_json,
+                    file_name=f"summary_stats_{symbol1}_{symbol2}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+            
+            with col_btn_3:
+                # Quick copy to clipboard (as CSV)
+                st.code(csv_data[:500] + "\n... (truncated, use download button for full data)", language="text")
+            
+            # Additional insights
+            with st.expander("📊 Additional Insights"):
+                insight_col1, insight_col2 = st.columns(2)
+                
+                with insight_col1:
+                    st.markdown("**Spread Statistics**")
+                    st.write(f"- Mean: {summary['spread']['mean']:.4f}")
+                    st.write(f"- Std Dev: {summary['spread']['std']:.4f}")
+                    st.write(f"- Range: [{summary['spread']['min']:.4f}, {summary['spread']['max']:.4f}]")
+                
+                with insight_col2:
+                    st.markdown("**Trading Signals Distribution**")
+                    total_signals = sum(summary['signals'].values())
+                    if total_signals > 0:
+                        st.write(f"- Long: {summary['signals']['long_spread_count']} ({100*summary['signals']['long_spread_count']/total_signals:.1f}%)")
+                        st.write(f"- Short: {summary['signals']['short_spread_count']} ({100*summary['signals']['short_spread_count']/total_signals:.1f}%)")
+                        st.write(f"- Exit: {summary['signals']['exit_count']} ({100*summary['signals']['exit_count']/total_signals:.1f}%)")
+                        st.write(f"- Neutral: {summary['signals']['neutral_count']} ({100*summary['signals']['neutral_count']/total_signals:.1f}%)")
+            
+            st.success("✅ Time-series table generated successfully!")
+            
+        except Exception as e:
+            st.error(f"Error generating time-series table: {e}")
+            import traceback
+            with st.expander("Error details"):
+                st.code(traceback.format_exc())
+    else:
+        st.warning(f"⏳ Need at least 20 bars for time-series table (currently: {symbol1}={len(data1)}, {symbol2}={len(data2)})")
+        st.info("The table will include: timestamps, OHLC, spread, z-score, returns, correlation, volume, RSI, Bollinger Bands, and trading signals.")
 
 # Auto-refresh
 auto_refresh = st.checkbox("Auto-refresh (5s)", value=should_auto_refresh, 

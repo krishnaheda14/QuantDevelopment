@@ -73,6 +73,20 @@ class DataManager:
                 PRIMARY KEY (symbol, timestamp)
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ohlc_5m (
+                symbol TEXT,
+                timestamp INTEGER,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                tick_count INTEGER,
+                PRIMARY KEY (symbol, timestamp)
+            )
+        ''')
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS analytics_cache (

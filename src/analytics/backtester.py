@@ -343,3 +343,141 @@ class Backtester:
             'equity_curve': [],
             'trades': []
         }
+
+    def multi_timeframe_backtest(self, data_by_timeframe: Dict[str, List[float]], 
+                                   strategy: str = 'z_score',
+                                   capital: float = 10000, **kwargs) -> Dict:
+        """
+        Run backtest across multiple timeframes and aggregate results.
+        
+        Args:
+            data_by_timeframe: Dictionary mapping timeframe (e.g., '1m', '5m', '1h') to price series
+            strategy: Strategy to backtest
+            capital: Initial capital per timeframe
+            **kwargs: Strategy parameters
+        
+        Returns:
+            Aggregated backtest results across all timeframes
+        """
+        timeframe_results = {}
+        
+        for tf, prices in data_by_timeframe.items():
+            if len(prices) < 50:
+                # Skip if insufficient data
+                continue
+            
+            result = self.run_backtest(prices, strategy=strategy, capital=capital, **kwargs)
+            timeframe_results[tf] = result
+        
+        if not timeframe_results:
+            return {
+                "timeframe_results": {},
+                "combined_metrics": self._empty_results(),
+                "best_timeframe": None
+            }
+        
+        # Calculate aggregate metrics
+        total_returns = [r['total_return'] for r in timeframe_results.values()]
+        sharpe_ratios = [r['sharpe_ratio'] for r in timeframe_results.values()]
+        max_drawdowns = [r['max_drawdown'] for r in timeframe_results.values()]
+        win_rates = [r['win_rate'] for r in timeframe_results.values()]
+        
+        combined_metrics = {
+            "avg_total_return": float(np.mean(total_returns)),
+            "avg_sharpe_ratio": float(np.mean(sharpe_ratios)),
+            "avg_max_drawdown": float(np.mean(max_drawdowns)),
+            "avg_win_rate": float(np.mean(win_rates)),
+            "best_return": float(np.max(total_returns)),
+            "worst_return": float(np.min(total_returns)),
+            "timeframe_count": len(timeframe_results)
+        }
+        
+        # Identify best timeframe
+        best_tf = max(timeframe_results.keys(), key=lambda tf: timeframe_results[tf]['total_return'])
+        
+        return {
+            "timeframe_results": timeframe_results,
+            "combined_metrics": combined_metrics,
+            "best_timeframe": best_tf,
+            "best_metrics": timeframe_results[best_tf]
+        }
+    
+    def walk_forward_analysis(self, prices: List[float], 
+                               in_sample_pct: float = 0.7,
+                               n_folds: int = 3,
+                               strategy: str = 'z_score',
+                               capital: float = 10000, **kwargs) -> Dict:
+        """
+        Perform walk-forward analysis (rolling train/test splits).
+        
+        Args:
+            prices: Full price series
+            in_sample_pct: Percentage of data for in-sample (training)
+            n_folds: Number of walk-forward folds
+            strategy: Strategy to test
+            capital: Initial capital
+            **kwargs: Strategy parameters
+        
+        Returns:
+            Walk-forward test results
+        """
+        prices_arr = np.array(prices)
+        n_total = len(prices_arr)
+        
+        fold_size = n_total // (n_folds + 1)
+        
+        fold_results = []
+        
+        for fold_idx in range(n_folds):
+            # Define in-sample and out-of-sample windows
+            train_start = fold_idx * fold_size
+            train_end = train_start + int(fold_size * in_sample_pct)
+            test_start = train_end
+            test_end = min(test_start + fold_size, n_total)
+            
+            if test_end - test_start < 20:
+                # Skip if test window too small
+                continue
+            
+            train_prices = prices_arr[train_start:train_end]
+            test_prices = prices_arr[test_start:test_end]
+            
+            # Optimize parameters on training set (simplified: just use provided params)
+            # In real implementation, would optimize here
+            
+            # Test on out-of-sample data
+            test_result = self.run_backtest(test_prices.tolist(), strategy=strategy, 
+                                             capital=capital, **kwargs)
+            
+            fold_results.append({
+                "fold": fold_idx + 1,
+                "train_window": (train_start, train_end),
+                "test_window": (test_start, test_end),
+                "test_return": test_result['total_return'],
+                "test_sharpe": test_result['sharpe_ratio'],
+                "test_win_rate": test_result['win_rate']
+            })
+        
+        if not fold_results:
+            return {
+                "fold_results": [],
+                "average_oos_return": 0.0,
+                "average_oos_sharpe": 0.0,
+                "consistency_score": 0.0
+            }
+        
+        # Calculate aggregate out-of-sample metrics
+        oos_returns = [f['test_return'] for f in fold_results]
+        oos_sharpes = [f['test_sharpe'] for f in fold_results]
+        
+        # Consistency score: negative if returns vary wildly
+        consistency_score = 1.0 / (1.0 + np.std(oos_returns)) if len(oos_returns) > 1 else 1.0
+        
+        return {
+            "fold_results": fold_results,
+            "average_oos_return": float(np.mean(oos_returns)),
+            "average_oos_sharpe": float(np.mean(oos_sharpes)),
+            "consistency_score": float(consistency_score),
+            "n_folds": len(fold_results)
+        }
+

@@ -77,17 +77,21 @@ pip install -r requirements.txt
 
 ### Running the System
 
-**Option 1: Run Everything (Recommended)**
+**Single-command dashboard (recommended):**
 
 ```powershell
-# Terminal 1: Start FastAPI backend
-python app.py
-
-# Terminal 2: Start Streamlit dashboard
-streamlit run streamlit_app.py
+python run.py
 ```
 
-**Option 2: Test Individual Components**
+This launches the Streamlit dashboard defined in `streamlit_main.py`.
+
+**Optional: Run API server (if needed):**
+
+```powershell
+python app.py
+```
+
+**Option: Test Individual Components**
 
 ```powershell
 # Test configuration
@@ -116,20 +120,28 @@ python src/storage/database.py
 
 ### Tabs Overview
 
-1. **📊 Price Charts**: Live candlestick and volume charts for selected symbols
-2. **📈 Spread Analysis**: Spread, z-score, and trading signals for pairs
-3. **🔗 Correlation**: Rolling correlation analysis
-4. **📉 Statistics**: ADF stationarity tests
-5. **🚨 Alerts**: Alert management and history
-6. **🔧 Debug**: System health, component status, API testing
+1. **� Spread Analysis**: OLS/Kalman hedge ratio, spread, z-score, Bollinger Bands, what-if scenarios, trading signals
+2. **🎯 Strategy Signals**: RSI, MACD, Bollinger Bands indicators with visual signals
+3. **📊 Statistical Tests**: ADF stationarity tests for both symbols, cointegration test with residual analysis
+4. **🔍 Backtesting**: Strategy backtesting (z-score, RSI, MACD, multi-strategy) with equity curves and performance metrics
+5. **🔔 Alerts**: Alert management, history, and custom threshold configuration
+6. **⚙️ System**: Connection status, data diagnostics, database stats, JSON export
+7. **🔎 Quick Compare**: Side-by-side price and volume comparison with tick fallback
+8. **🧮 Kalman & Robust Regression**: Dynamic hedge estimation, OLS vs Huber vs Theil-Sen comparison, outlier detection
+9. **💧 Liquidity & Heatmap**: Volume profile with POC, 2D liquidity heatmap (time × price), value area identification
+10. **🔬 Microstructure**: Order flow classification (buy/sell pressure), VWAP deviation, trade intensity, effective spread
+11. **🔗 Correlation Matrix**: Multi-asset correlation heatmap, pair rankings, best/worst correlated pairs
+12. **📋 Time-Series Stats Table**: Comprehensive table with all features at each timestamp, CSV/JSON export with column selection
 
 ### Dashboard Controls (Sidebar)
 
 - **Symbol Selection**: Choose trading pairs
-- **Interval**: Select sampling interval (1s/1m/5m)
-- **Rolling Window**: Adjust window for rolling statistics
-- **Z-Score Threshold**: Set alert threshold
-- **Auto-refresh**: Enable periodic dashboard updates
+- **Interval**: Select sampling interval (1s/5s/10s/1m/5m)
+- **Lookback**: Adjust time window (1-60 minutes)
+- **Z-Score Threshold**: Set entry/exit thresholds for mean-reversion
+- **RSI Levels**: Configure overbought/oversold levels
+- **Apply Changes**: Commit configuration updates
+- **Auto-refresh**: Enable/disable periodic dashboard updates (5s default)
 
 ## 🔍 API Endpoints
 
@@ -163,14 +175,27 @@ python src/storage/database.py
 
 ## 📈 Analytics Methodology
 
-### OLS Regression
+### Regression Methods
 
-Computes hedge ratio between two assets:
+**OLS Regression** - Standard linear regression:
 ```
 price2 = alpha + beta * price1
 ```
 - **Hedge Ratio (beta)**: Number of units of asset1 to hedge asset2
-- **R-squared**: Goodness of fit
+- **R-squared**: Goodness of fit (0-1, higher is better)
+
+**Huber Regression** - Robust M-estimator less sensitive to outliers:
+- Detects and reports outlier percentage
+- Better for real-world noisy data
+
+**Theil-Sen Regression** - Median-based, highly resistant to outliers:
+- Uses median of pairwise slopes
+- Most robust against extreme values
+
+**Kalman Filter** - Dynamic hedge ratio estimation:
+- Adapts to time-varying relationships
+- Provides confidence intervals
+- Updates online with each new observation
 
 ### Spread Analysis
 
@@ -181,19 +206,45 @@ Z-Score = (spread - mean) / std_dev
 
 ### Trading Signals
 
-- **Z-score > 2.0**: Short spread (price2 overvalued)
-- **Z-score < -2.0**: Long spread (price2 undervalued)
-- **|Z-score| < 0.5**: Exit position (mean reversion)
+- **Z-score > 2.0**: Short spread (price2 overvalued relative to price1)
+- **Z-score < -2.0**: Long spread (price2 undervalued relative to price1)
+- **|Z-score| < 0.5**: Exit position (mean reversion complete)
 
-### Kalman Filter
+### Microstructure Metrics
 
-Dynamically estimates time-varying hedge ratio using Bayesian filtering.
+**Order Flow Imbalance (OFI)**:
+```
+OFI = (Buy Volume - Sell Volume) / Total Volume
+```
 
-### ADF Test
+**VWAP (Volume-Weighted Average Price)**:
+```
+VWAP = Σ(Price × Volume) / Σ(Volume)
+```
 
-Tests for stationarity (requirement for mean reversion):
+**Effective Spread**:
+```
+Effective Spread = 2 × |Trade Price - Mid Price|
+```
+
+### Liquidity Metrics
+
+**Point of Control (POC)**: Price level with highest traded volume
+
+**Value Area**: Price range containing 70% of traded volume
+
+**Volume Profile**: Distribution of volume across price levels
+
+### Statistical Tests
+
+**ADF Test** - Tests for stationarity (requirement for mean reversion):
 - **p-value < 0.05**: Stationary (good for pairs trading)
-- **p-value >= 0.05**: Non-stationary (avoid)
+- **p-value >= 0.05**: Non-stationary (avoid pairs trading)
+
+**Cointegration Test** - Tests if two assets have long-term equilibrium:
+- Runs OLS regression
+- Performs ADF test on residuals (spread)
+- If spread is stationary → assets are cointegrated
 
 ## 🚨 Alert System
 
@@ -262,8 +313,9 @@ pip install -r requirements.txt --upgrade
 
 ```
 GEMSCAP_QUANT_PROJECT/
-├── app.py                      # Main FastAPI application
-├── streamlit_app.py            # Streamlit dashboard
+├── app.py                      # FastAPI application (optional)
+├── run.py                      # Single-command launcher for Streamlit
+├── streamlit_main.py           # Streamlit dashboard (12 tabs)
 ├── config.py                   # Configuration & logging
 ├── requirements.txt            # Python dependencies
 ├── README.md                   # This file
@@ -328,6 +380,19 @@ Edit `config.py` to customize:
 - **Kalman Filters**: https://filterpy.readthedocs.io/
 - **ADF Test**: Understanding stationarity
 
+## 📦 Minimal Exam Package
+
+For examiner-friendly execution, include only essential files:
+
+- `run.py` — single-command launcher
+- `streamlit_main.py` — Streamlit UI
+- `src/` — core modules actually used by the UI (analytics, core)
+- `requirements.txt` — dependencies
+- `data/` — SQLite DB (if pre-seeded) and optional CSV template
+- `README.md` — setup, dependencies, methodology, analytics explanation
+
+Exclude large or unused folders (e.g., `tests/`, `notebooks/`, heavy logs) from the zip unless explicitly requested.
+
 ## 🤝 Contributing
 
 This is a template/learning project. Feel free to:
@@ -337,14 +402,7 @@ This is a template/learning project. Feel free to:
 - Implement backtesting
 - Add machine learning models
 
-## ⚠️ Disclaimer
 
-**This is for educational purposes only. Not financial advice.**
-
-- Do not use real money without thorough testing
-- Past performance ≠ future results
-- Cryptocurrency markets are highly volatile
-- Always do your own research
 
 ## 📄 License
 
@@ -358,5 +416,3 @@ MIT License - feel free to use and modify
 - This project was developed with assistance from AI (ChatGPT/Claude)
 
 ---
-
-**Made with ❤️ for quant enthusiasts**
