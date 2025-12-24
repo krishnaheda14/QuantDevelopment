@@ -124,11 +124,12 @@ export const api = {
   async getSpreadAnalysis(
     symbol1: string,
     symbol2: string,
-    lookback: number = 100
+    lookback: number = 100,
+    interval: string = '1m'
   ): Promise<SpreadAnalysis> {
-    debug('API', 'Fetching spread analysis', { symbol1, symbol2, lookback })
+    debug('API', 'Fetching spread analysis', { symbol1, symbol2, lookback, interval })
     const { data } = await apiClient.get('/analytics/spread', {
-      params: { symbol1, symbol2, lookback },
+      params: { symbol1, symbol2, lookback, interval },
     })
     info('API', 'Spread analysis received', {
       hedgeRatio: data.hedge_ratio,
@@ -138,36 +139,48 @@ export const api = {
     return data
   },
 
-  async getADFTest(symbol1: string, symbol2?: string, lookback: number = 100): Promise<ADFTestResult> {
-    debug('API', 'Fetching ADF test', { symbol1, symbol2, lookback })
-    const params: any = { symbol: symbol1, lookback }
+  async getADFTest(symbol1: string, symbol2?: string, lookback: number = 100, interval: string = '1m', rollingWindow?: number, rollingStep?: number): Promise<ADFTestResult> {
+    debug('API', 'Fetching ADF test', { symbol1, symbol2, lookback, interval, rollingWindow, rollingStep })
+    const params: any = { symbol: symbol1, lookback, interval }
     if (symbol2) params.symbol2 = symbol2
+    if (rollingWindow) params.rolling_window = rollingWindow
+    if (rollingStep) params.rolling_step = rollingStep
     const { data } = await apiClient.get('/analytics/adf', {
       params,
     })
     info('API', 'ADF test result received', {
       isStationary: data.is_stationary,
       pValue: data.p_value,
+      stationaryPct: data.stationary_pct,
     })
     return data
   },
 
-  async getCointegration(symbol1: string, symbol2: string, lookback?: number): Promise<CointegrationResult> {
-    debug('API', 'Fetching cointegration test', { symbol1, symbol2, lookback })
-    const params: any = { symbol1, symbol2 }
+  async getCointegration(symbol1: string, symbol2: string, lookback?: number, interval: string = '1s'): Promise<CointegrationResult> {
+    debug('API', 'Fetching cointegration test', { symbol1, symbol2, lookback, interval })
+    const params: any = { symbol1, symbol2, interval }
     if (lookback) params.lookback = lookback
+    // cache-busting timestamp to avoid stale browser/proxy caches
+    params._ts = Date.now()
     const { data } = await apiClient.get('/analytics/cointegration', {
       params,
+      headers: { 'Cache-Control': 'no-cache' },
     })
     info('API', 'Cointegration result received', {
       isCointegrated: data.is_cointegrated,
-      pValue: data.spread_p_value,
+      pValue: data.p_value,
     })
     return data
   },
 
-  async getIndicators(symbol1: string, arg2?: string | number, arg3?: number): Promise<TechnicalIndicators> {
+  async getIndicators(
+    symbol1: string,
+    arg2?: string | number,
+    arg3?: number,
+    interval: string = '1m'
+  ): Promise<TechnicalIndicators> {
     // Flexible signature: (symbol), (symbol, lookback), (symbol1, symbol2, lookback)
+    // New optional last param: interval (e.g. '1m', '5m')
     let symbol2: string | undefined
     let lookback = 100
     if (typeof arg2 === 'string') {
@@ -177,8 +190,8 @@ export const api = {
       lookback = arg2
     }
 
-    debug('API', 'Fetching technical indicators', { symbol1, symbol2, lookback })
-    const params: any = { symbol: symbol1, lookback }
+    debug('API', 'Fetching technical indicators', { symbol1, symbol2, lookback, interval })
+    const params: any = { symbol: symbol1, lookback, interval }
     if (symbol2) params.symbol2 = symbol2
     const { data } = await apiClient.get('/analytics/indicators', {
       params,

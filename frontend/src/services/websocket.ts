@@ -10,6 +10,8 @@ class WebSocketService {
   private maxReconnectAttempts = 5
   private reconnectDelay = 2000
   private isIntentionalDisconnect = false
+  // Track last time we checked indicators per symbol to avoid spamming the API
+  private lastIndicatorCheck: Map<string, number> = new Map()
 
   // Event handlers
   private tickHandlers: Array<(tick: TickData) => void> = []
@@ -213,8 +215,111 @@ class WebSocketService {
           info('WebSocket', `Processed ${barsProcessed} OHLC bars`)
         } else if (payload && payload.symbol && (payload.close !== undefined || payload.c !== undefined)) {
           if (payload.close === undefined && payload.c !== undefined) payload.close = Number(payload.c)
-          this.notifyOHLCHandlers(payload as OHLCBar)
+            this.notifyOHLCHandlers(payload as OHLCBar)
           info('WebSocket', `Processed 1 OHLC bar: ${payload.symbol}`)
+            // Check indicators for alerting (throttled per-symbol)
+            try {
+              const store = useStore.getState()
+              const symbol = payload.symbol
+              const lastCheck = this.lastIndicatorCheck.get(symbol) || 0
+              const now = Date.now()
+              // Only check once per 60s per symbol
+              if (now - lastCheck > 60000) {
+                this.lastIndicatorCheck.set(symbol, now)
+                // Fetch recent indicators and evaluate simple alerts (RSI, MACD)
+                api.getIndicators(symbol, 200, store.settings.aggregationInterval)
+                  .then((ind) => {
+                    try {
+                      if (!ind) return
+                      // RSI
+                      const rsi = ind.rsi || (ind.indicator_series && ind.indicator_series.rsi) || []
+                      if (Array.isArray(rsi) && rsi.length) {
+                        const last = Number(rsi[rsi.length - 1])
+                        if (Number.isFinite(last)) {
+                          const over = store.settings.rsiOverbought ?? store.rsiOverbought ?? 70
+                          const under = store.settings.rsiOversold ?? store.rsiOversold ?? 30
+                          const recent = store.alerts.find(a => a.type === 'RSI' && a.symbol === symbol && (Date.now() - a.timestamp) < 60000)
+                          if (!recent) {
+                            if (last >= over) {
+                              store.addAlert({
+                                id: `rsi-over-${symbol}-${Date.now()}`,
+                                timestamp: Date.now(),
+                                symbol,
+                                type: 'RSI',
+                                message: `RSI ${last.toFixed(0)} >= ${over} (overbought)`,
+                                severity: 'warning',
+                                triggered: true,
+                                value: last,
+                              })
+                            } else if (last <= under) {
+                              store.addAlert({
+                                id: `rsi-under-${symbol}-${Date.now()}`,
+                                timestamp: Date.now(),
+                                symbol,
+                                type: 'RSI',
+                                message: `RSI ${last.toFixed(0)} <= ${under} (oversold)`,
+                                severity: 'warning',
+                                triggered: true,
+                                value: last,
+                              })
+                            }
+                          }
+                        }
+                      }
+
+                      // MACD crossover (histogram sign change)
+                      const macdHist = ind.macd_histogram || (ind.indicator_series && ind.indicator_series.macd_histogram) || []
+                      if (Array.isArray(macdHist) && macdHist.length >= 2) {
+                        const a = Number(macdHist[macdHist.length - 2])
+                        const b = Number(macdHist[macdHist.length - 1])
+                        if (Number.isFinite(a) && Number.isFinite(b) && (a <= 0 && b > 0 || a >= 0 && b < 0)) {
+                          const recentMacd = store.alerts.find(a => a.type === 'MACD' && a.symbol === symbol && (Date.now() - a.timestamp) < 60000)
+                          if (!recentMacd) {
+                            store.addAlert({
+                              id: `macd-${symbol}-${Date.now()}`,
+                              timestamp: Date.now(),
+                              symbol,
+                              type: 'MACD',
+                              message: `MACD histogram crossover detected for ${symbol}`,
+                              severity: 'info',
+                              triggered: true,
+                            })
+                          }
+                        }
+                      }
+
+                      // Z-score / spread: if we have a spreadAnalysis in the store, evaluate
+                      try {
+                        const spread = store.spreadAnalysis
+                        if (spread && typeof spread.current_zscore === 'number') {
+                          const z = Number(spread.current_zscore)
+                          const entry = store.settings.zScoreThreshold ?? store.zscoreEntry ?? 2.0
+                          const recentZ = store.alerts.find(a => a.type === 'ZSCORE' && (Date.now() - a.timestamp) < 60000)
+                          if (!recentZ && Number.isFinite(z) && Math.abs(z) >= entry) {
+                            store.addAlert({
+                              id: `zscore-${Date.now()}`,
+                              timestamp: Date.now(),
+                              symbol: store.selectedSymbol1 + '/' + store.selectedSymbol2,
+                              type: 'ZSCORE',
+                              message: `Z-score ${z.toFixed(2)} (threshold ${entry})`,
+                              severity: 'warning',
+                              triggered: true,
+                              value: z,
+                            })
+                          }
+                        }
+                      } catch (e) {
+                        debug('WebSocket', 'Spread z-score check failed', e)
+                      }
+                    } catch (e) {
+                      debug('WebSocket', 'Indicator-based alert processing failed', e)
+                    }
+                  })
+                  .catch((e) => debug('WebSocket', 'Failed to fetch indicators for alerting', { symbol, e }))
+              }
+            } catch (e) {
+              debug('WebSocket', 'Indicator alerting failed', e)
+            }
         }
       } else if (channel === 'alerts') {
         // Backend-originated alerts -> add to frontend store so Alerts tab shows them

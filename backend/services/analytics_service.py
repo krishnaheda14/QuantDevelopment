@@ -106,8 +106,8 @@ class AnalyticsService:
         logger.debug(f"Indicators computed for {symbol}: keys={list(result.keys())}")
         return result
 
-    async def adf_test(self, symbol: str, lookback: int) -> Dict[str, Any]:
-        logger.info(f"adf_test called: {symbol}, lookback={lookback}")
+    async def adf_test(self, symbol: str, lookback: int, rolling_window: Optional[int] = None, rolling_step: Optional[int] = None, threshold: float = 0.7) -> Dict[str, Any]:
+        logger.info(f"adf_test called: {symbol}, lookback={lookback}, rolling_window={rolling_window}, rolling_step={rolling_step}, threshold={threshold}")
         closes = await self._fetch_ohlc_closes(symbol, '1m', lookback)
 
         if len(closes) < 20:
@@ -122,17 +122,48 @@ class AnalyticsService:
 
         try:
             series = pd.Series(closes).dropna()
+
+            # full-sample ADF
             res = adfuller(series.values, autolag='AIC')
             stat = float(res[0])
             pvalue = float(res[1])
             crit = {k: float(v) for k, v in res[4].items()}
             is_stationary = bool(pvalue < 0.05)  # Convert numpy.bool_ to Python bool
+
+            # Optional rolling-window check: slide a window across the series
+            stationary_pct = None
+            is_stationary_by_threshold = None
+            if rolling_window and rolling_window >= 20:
+                step = int(rolling_step) if rolling_step and rolling_step > 0 else 1
+                n = len(series)
+                windows = []
+                i = 0
+                while i + rolling_window <= n:
+                    windows.append(series.values[i:i + rolling_window])
+                    i += step
+
+                total = len(windows)
+                if total > 0:
+                    count = 0
+                    for w in windows:
+                        try:
+                            r = adfuller(w, autolag='AIC')
+                            pv = float(r[1])
+                            if pv < 0.05:
+                                count += 1
+                        except Exception:
+                            continue
+                    stationary_pct = float(count) / float(total)
+                    is_stationary_by_threshold = bool(stationary_pct >= float(threshold))
+
             result = {
                 'adf_statistic': stat,
                 'p_value': pvalue,
                 'critical_values': crit,
                 'is_stationary': is_stationary,
-                'observations': len(series)
+                'observations': len(series),
+                'stationary_pct': stationary_pct,
+                'is_stationary_by_threshold': is_stationary_by_threshold,
             }
             logger.debug(f"ADF result for {symbol}: {result}")
             return result
@@ -143,45 +174,157 @@ class AnalyticsService:
                 'p_value': 1.0,
                 'critical_values': {'1%': -3.5, '5%': -2.9, '10%': -2.6},
                 'is_stationary': False,
-                'observations': len(closes)
+                'observations': len(closes),
+                'stationary_pct': None,
+                'is_stationary_by_threshold': None,
             }
 
-    async def cointegration_test(self, symbol1: str, symbol2: str, lookback: int) -> Dict[str, Any]:
-        logger.info(f"cointegration_test called: {symbol1}, {symbol2}, lookback={lookback}")
-        closes1 = await self._fetch_ohlc_closes(symbol1, '1m', lookback)
-        closes2 = await self._fetch_ohlc_closes(symbol2, '1m', lookback)
+    async def cointegration_test(self, symbol1: str, symbol2: str, lookback: int, interval: str = '1s') -> Dict[str, Any]:
+        """Compute Engle-Granger cointegration test on log prices.
+        
+        Returns:
+            Dict with cointegration_statistic, p_value, is_cointegrated, hedge_ratio,
+            r_squared, observations, timestamp, used_interval
+        """
+        logger.info(f"[COINTEGRATION] START: {symbol1} vs {symbol2}, lookback={lookback}, interval={interval}")
+        
+        # Fetch OHLC closes from Redis
+        closes1 = await self._fetch_ohlc_closes(symbol1, interval, lookback)
+        closes2 = await self._fetch_ohlc_closes(symbol2, interval, lookback)
+        logger.info(f"[COINTEGRATION] Fetched data: {symbol1}={len(closes1)} bars, {symbol2}={len(closes2)} bars")
 
-        if len(closes1) < 20 or len(closes2) < 20:
-            logger.warning(f"Not enough data for cointegration ({symbol1}, {symbol2}), returning fallback")
-            return {'cointegration_statistic': 0.0, 'p_value': 1.0, 'is_cointegrated': False}
+        # Fallback logic: if requested interval has too few points, try common intervals
+        used_interval = interval
+        min_required = 20
+        if len(closes1) < min_required or len(closes2) < min_required:
+            logger.warning(f"[COINTEGRATION] Interval '{interval}' insufficient ({len(closes1)},{len(closes2)} bars). Trying fallbacks...")
+            for alt in ['1m', '5m', '1h']:
+                if alt == interval:
+                    continue
+                alt1 = await self._fetch_ohlc_closes(symbol1, alt, lookback)
+                alt2 = await self._fetch_ohlc_closes(symbol2, alt, lookback)
+                logger.debug(f"[COINTEGRATION] Trying interval '{alt}': {len(alt1)},{len(alt2)} bars")
+                if len(alt1) >= min_required and len(alt2) >= min_required:
+                    logger.info(f"[COINTEGRATION] Using fallback interval '{alt}' ({len(alt1)},{len(alt2)} bars)")
+                    closes1 = alt1
+                    closes2 = alt2
+                    used_interval = alt
+                    break
+
+        # Final check
+        if len(closes1) < min_required or len(closes2) < min_required:
+            logger.error(f"[COINTEGRATION] FAILED: insufficient data after fallbacks ({len(closes1)},{len(closes2)} bars)")
+            return {
+                'cointegration_statistic': None,
+                'p_value': 1.0,
+                'is_cointegrated': False,
+                'hedge_ratio': None,
+                'r_squared': None,
+                'observations': max(len(closes1), len(closes2)),
+                'timestamp': datetime.now().isoformat(),
+                'used_interval': used_interval
+            }
 
         try:
+            # Align series
             s1 = pd.Series(closes1)
             s2 = pd.Series(closes2)
-            # align lengths
             n = min(len(s1), len(s2))
-            s1 = s1.iloc[-n:]
-            s2 = s2.iloc[-n:]
-            # Basic sanity checks: ensure series have variance
-            var1 = float(s1.var())
-            var2 = float(s2.var())
-            logger.debug(f"Cointegration inputs: n={n}, var1={var1}, var2={var2}")
+            s1 = s1.iloc[-n:].reset_index(drop=True)
+            s2 = s2.iloc[-n:].reset_index(drop=True)
+            logger.info(f"[COINTEGRATION] Aligned series: n={n}")
+            
+            # Convert to log prices
+            log_s1 = np.log(s1.values)
+            log_s2 = np.log(s2.values)
+            
+            # Validate log prices
+            if not (np.all(np.isfinite(log_s1)) and np.all(np.isfinite(log_s2))):
+                logger.error(f"[COINTEGRATION] FAILED: invalid log prices (zero/negative input)")
+                return {
+                    'cointegration_statistic': None,
+                    'p_value': 1.0,
+                    'is_cointegrated': False,
+                    'hedge_ratio': None,
+                    'r_squared': None,
+                    'observations': n,
+                    'timestamp': datetime.now().isoformat(),
+                    'used_interval': used_interval
+                }
+            
+            # Check variance
+            var1 = float(np.var(log_s1))
+            var2 = float(np.var(log_s2))
+            logger.debug(f"[COINTEGRATION] Log price variance: var1={var1:.6f}, var2={var2:.6f}")
 
-            if not (np.isfinite(var1) and np.isfinite(var2)) or var1 == 0.0 or var2 == 0.0:
-                logger.warning(f"Cointegration skipped - zero or invalid variance (var1={var1}, var2={var2})")
-                return {'cointegration_statistic': 0.0, 'p_value': 1.0, 'is_cointegrated': False}
+            if var1 < 1e-12 or var2 < 1e-12:
+                logger.error(f"[COINTEGRATION] FAILED: zero variance (constant prices)")
+                return {
+                    'cointegration_statistic': None,
+                    'p_value': 1.0,
+                    'is_cointegrated': False,
+                    'hedge_ratio': None,
+                    'r_squared': None,
+                    'observations': n,
+                    'timestamp': datetime.now().isoformat(),
+                    'used_interval': used_interval
+                }
 
-            stat, pvalue, _ = coint(s1.values, s2.values)
-            # Handle NaN/None returns defensively
-            stat_f = float(stat) if (stat is not None and np.isfinite(stat)) else 0.0
+            # Run cointegration test
+            stat, pvalue, crit = coint(log_s1, log_s2)
+            stat_f = float(stat) if (stat is not None and np.isfinite(stat)) else None
             pvalue_f = float(pvalue) if (pvalue is not None and np.isfinite(pvalue)) else 1.0
-            is_cointegrated = bool(pvalue_f < 0.05)  # Convert numpy.bool_ to Python bool
-            result = {'cointegration_statistic': stat_f, 'p_value': pvalue_f, 'is_cointegrated': is_cointegrated}
-            logger.debug(f"Cointegration result: {result}")
+            is_cointegrated = bool(pvalue_f < 0.05)
+            logger.info(f"[COINTEGRATION] Test result: stat={stat_f}, p={pvalue_f:.6f}, cointegrated={is_cointegrated}")
+
+            # Compute hedge ratio via OLS
+            hedge_ratio = None
+            r_squared = None
+            try:
+                X = sm.add_constant(pd.Series(log_s1))
+                model = sm.OLS(pd.Series(log_s2), X).fit()
+                hedge_ratio = float(model.params.iloc[1]) if len(model.params) > 1 else None
+                r_squared = float(model.rsquared) if hasattr(model, 'rsquared') else None
+                logger.info(f"[COINTEGRATION] OLS: hedge_ratio={hedge_ratio:.6f}, r2={r_squared:.6f}")
+            except Exception as e:
+                logger.exception(f"[COINTEGRATION] OLS failed: {e}")
+                # Fallback: numpy polyfit
+                try:
+                    coef = np.polyfit(log_s1, log_s2, 1)
+                    hedge_ratio = float(coef[0])
+                    y_pred = hedge_ratio * log_s1 + float(coef[1])
+                    ss_res = float(((log_s2 - y_pred) ** 2).sum())
+                    ss_tot = float(((log_s2 - log_s2.mean()) ** 2).sum())
+                    r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
+                    logger.info(f"[COINTEGRATION] Polyfit fallback: hedge_ratio={hedge_ratio:.6f}, r2={r_squared:.6f}")
+                except Exception as e2:
+                    logger.exception(f"[COINTEGRATION] Polyfit fallback also failed: {e2}")
+
+            result = {
+                'cointegration_statistic': stat_f,
+                'p_value': pvalue_f,
+                'critical_values': [float(c) for c in crit] if crit is not None else None,
+                'is_cointegrated': is_cointegrated,
+                'hedge_ratio': hedge_ratio,
+                'r_squared': r_squared,
+                'observations': int(n),
+                'timestamp': datetime.now().isoformat(),
+                'used_interval': used_interval
+            }
+            logger.info(f"[COINTEGRATION] SUCCESS: returning result")
             return result
         except Exception as e:
-            logger.exception(f"Cointegration computation failed: {e}")
-            return {'cointegration_statistic': 0.0, 'p_value': 1.0, 'is_cointegrated': False}
+            logger.exception(f"[COINTEGRATION] EXCEPTION: {e}")
+            return {
+                'cointegration_statistic': None,
+                'p_value': 1.0,
+                'is_cointegrated': False,
+                'hedge_ratio': None,
+                'r_squared': None,
+                'observations': 0,
+                'timestamp': datetime.now().isoformat(),
+                'used_interval': used_interval
+            }
 
     async def compute_ols(self, symbol1: str, symbol2: str, lookback: int) -> Dict[str, Any]:
         logger.info(f"compute_ols called: {symbol1}, {symbol2}, lookback={lookback}")

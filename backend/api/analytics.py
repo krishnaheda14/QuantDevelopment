@@ -55,6 +55,10 @@ class SpreadResponse(BaseModel):
 class ADFRequest(BaseModel):
     symbol: str
     lookback: int = 60
+    # optional rolling-window check (non-invasive)
+    rolling_window: Optional[int] = None
+    rolling_step: Optional[int] = None
+    rolling_threshold: Optional[float] = 0.7
 
 
 class ADFResponse(BaseModel):
@@ -63,6 +67,9 @@ class ADFResponse(BaseModel):
     critical_values: dict
     is_stationary: bool
     observations: int
+    # Optional rolling-window summary
+    stationary_pct: Optional[float] = None
+    is_stationary_by_threshold: Optional[bool] = None
 
 
 @router.post("/ols", response_model=OLSResponse)
@@ -151,7 +158,10 @@ async def adf_test(request: ADFRequest):
     try:
         result = await analytics_service.adf_test(
             request.symbol,
-            request.lookback
+            request.lookback,
+            request.rolling_window,
+            request.rolling_step,
+            request.rolling_threshold
         )
         logger.debug(f"/adf result keys={list(result.keys())}")
         return result
@@ -163,7 +173,10 @@ async def adf_test(request: ADFRequest):
 @router.get("/adf")
 async def adf_test_get(
     symbol: Optional[str] = Query(None),
-    lookback: Optional[int] = Query(100)
+    lookback: Optional[int] = Query(60),
+    rolling_window: Optional[int] = Query(None),
+    rolling_step: Optional[int] = Query(1),
+    rolling_threshold: float = Query(0.7)
 ):
     """
     GET version: Augmented Dickey-Fuller test for stationarity
@@ -173,14 +186,17 @@ async def adf_test_get(
     
     # Ensure lookback is valid
     if lookback is None:
-        lookback = 100
+        lookback = 60
     lookback = max(20, min(int(lookback), 1440))
     
-    logger.info(f"API /adf GET called - symbol={symbol} lookback={lookback}")
+    logger.info(f"API /adf GET called - symbol={symbol} lookback={lookback} rolling_window={rolling_window} rolling_step={rolling_step} rolling_threshold={rolling_threshold}")
     try:
         result = await analytics_service.adf_test(
             symbol,
-            lookback
+            lookback,
+            rolling_window,
+            rolling_step,
+            rolling_threshold
         )
         logger.debug(f"/adf (GET) result keys={list(result.keys())}")
         return result
@@ -193,23 +209,34 @@ async def adf_test_get(
 async def cointegration_test(
     symbol1: str,
     symbol2: str,
-    lookback: int = Query(60, ge=20, le=1440)
+    lookback: int = Query(60, ge=20, le=1440),
+    interval: str = Query('1s')
 ):
     """
-    Johansen cointegration test
-    Tests if two time series are cointegrated
+    Engle-Granger cointegration test
+    Tests if two time series are cointegrated (log prices)
     """
-    logger.info(f"API /cointegration called - symbol1={symbol1} symbol2={symbol2} lookback={lookback}")
+    logger.info(f"[API] GET /cointegration/{symbol1}/{symbol2} - lookback={lookback}, interval={interval}")
     try:
         result = await analytics_service.cointegration_test(
             symbol1,
             symbol2,
-            lookback
+            lookback,
+            interval
         )
-        logger.debug(f"/cointegration result keys={list(result.keys())}")
-        return result
+        logger.info(f"[API] /cointegration result: stat={result.get('cointegration_statistic')}, obs={result.get('observations')}")
+        from fastapi.responses import JSONResponse
+        # Return with no-cache headers to prevent stale responses
+        return JSONResponse(
+            content=result,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     except Exception as e:
-        logger.exception("/cointegration failed")
+        logger.exception("[API] /cointegration failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -217,10 +244,11 @@ async def cointegration_test(
 async def cointegration_test_query(
     symbol1: Optional[str] = Query(None),
     symbol2: Optional[str] = Query(None),
-    lookback: Optional[int] = Query(100)
+    lookback: Optional[int] = Query(100),
+    interval: str = Query('1s')
 ):
     """
-    Query param version: Johansen cointegration test
+    Query param version: Engle-Granger cointegration test
     """
     if not symbol1 or not symbol2:
         raise HTTPException(status_code=400, detail="Both symbol1 and symbol2 are required")
@@ -230,14 +258,26 @@ async def cointegration_test_query(
         lookback = 100
     lookback = max(20, min(int(lookback), 1440))
     
+    logger.info(f"[API] GET /cointegration (query) - {symbol1} vs {symbol2}, lookback={lookback}, interval={interval}")
     try:
         result = await analytics_service.cointegration_test(
             symbol1,
             symbol2,
-            lookback
+            lookback,
+            interval
         )
-        return result
+        logger.info(f"[API] /cointegration (query) result: stat={result.get('cointegration_statistic')}, obs={result.get('observations')}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content=result,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     except Exception as e:
+        logger.exception("[API] /cointegration (query) failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

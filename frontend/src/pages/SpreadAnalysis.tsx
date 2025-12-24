@@ -19,8 +19,9 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
+  Collapse,
 } from '@mui/material';
-import { ShowChart, TrendingUp, TrendingDown, Remove, InfoOutlined } from '@mui/icons-material';
+import { ShowChart, TrendingUp, TrendingDown, Remove, InfoOutlined, ExpandLess, ExpandMore } from '@mui/icons-material';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { useStore } from '@/store';
@@ -39,9 +40,11 @@ export const SpreadAnalysis: React.FC = () => {
     settings,
     ohlcBars,
   } = useStore();
+  const { setAggregationInterval } = useStore();
 
   const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [debugCollapsed, setDebugCollapsed] = useState(false);
   const [fallbackSeries1, setFallbackSeries1] = useState<Array<{ timestamp: string; price: number }>>([])
   const [fallbackSeries2, setFallbackSeries2] = useState<Array<{ timestamp: string; price: number }>>([])
   const [metricInfo, setMetricInfo] = useState<{ open: boolean; metric?: string }>({ open: false })
@@ -76,8 +79,8 @@ export const SpreadAnalysis: React.FC = () => {
     error: spreadError,
     refetch: refetchSpread,
   } = useQuery({
-    queryKey: ['spread', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod],
-    queryFn: () => api.getSpreadAnalysis(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod),
+    queryKey: ['spread', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod, settings.aggregationInterval],
+    queryFn: () => api.getSpreadAnalysis(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod, settings.aggregationInterval),
     enabled: !!selectedSymbol1 && !!selectedSymbol2,
     refetchInterval: 5000, // Refresh every 5 seconds
   });
@@ -104,7 +107,7 @@ export const SpreadAnalysis: React.FC = () => {
     const fetchFallback = async (symbol: string, setter: (s: Array<{ timestamp: string; price: number }>) => void) => {
       try {
         if (!symbol) return
-        const bars = await api.getOHLC(symbol, '1m', settings.lookbackPeriod)
+        const bars = await api.getOHLC(symbol, settings.aggregationInterval || '1m', settings.lookbackPeriod)
         if (!mounted) return
         const series = bars.map((b: any) => ({ timestamp: b.timestamp ? new Date(b.timestamp).toLocaleTimeString() : new Date(b.t || Date.now()).toLocaleTimeString(), price: Number(b.close) }))
         setter(series)
@@ -321,6 +324,25 @@ export const SpreadAnalysis: React.FC = () => {
                   >
                     {spreadLoading ? 'Analyzing...' : 'Refresh Analysis'}
                   </Button>
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    select
+                    fullWidth
+                    label="Timeframe"
+                    value={settings.aggregationInterval}
+                    onChange={(e) => {
+                      setAggregationInterval(e.target.value)
+                    }}
+                    helperText="OHLC aggregation interval used for metrics"
+                  >
+                    <MenuItem value="1m">1m</MenuItem>
+                    <MenuItem value="5m">5m</MenuItem>
+                    <MenuItem value="15m">15m</MenuItem>
+                    <MenuItem value="1h">1h</MenuItem>
+                    <MenuItem value="4h">4h</MenuItem>
+                    <MenuItem value="1d">1d</MenuItem>
+                  </TextField>
                 </Grid>
               </Grid>
             </CardContent>
@@ -580,12 +602,20 @@ export const SpreadAnalysis: React.FC = () => {
             <Grid item xs={12}>
               <Card>
                 <CardContent>
-                  <Typography variant="h6" gutterBottom>
-                    Debug — Raw Values & Explainability
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">Quick diagnostics to help understand why metrics may be zero or missing</Typography>
+                  <Box display="flex" alignItems="center" justifyContent="space-between">
+                    <Box>
+                      <Typography variant="h6" gutterBottom>
+                        Debug — Raw Values & Explainability
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">Quick diagnostics to help understand why metrics may be zero or missing</Typography>
+                    </Box>
+                    <IconButton size="small" onClick={() => setDebugCollapsed((s) => !s)} aria-label={debugCollapsed ? 'Expand' : 'Collapse'}>
+                      {debugCollapsed ? <ExpandMore /> : <ExpandLess />}
+                    </IconButton>
+                  </Box>
                   <Divider sx={{ my: 2 }} />
-                  <Grid container spacing={2}>
+                  <Collapse in={!debugCollapsed} timeout="auto" unmountOnExit>
+                    <Grid container spacing={2}>
                     <Grid item xs={12} sm={6} md={3}>
                       <Paper sx={{ p: 2 }}>
                         <Typography variant="caption" color="text.secondary">Hedge Ratio</Typography>
@@ -619,8 +649,9 @@ export const SpreadAnalysis: React.FC = () => {
                       </Paper>
                     </Grid>
                   </Grid>
-                </CardContent>
-              </Card>
+                </Collapse>
+              </CardContent>
+            </Card>
             </Grid>
 
             {/* Z-Score Chart */}

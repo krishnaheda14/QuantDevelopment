@@ -110,7 +110,7 @@ const API_ENDPOINTS: APIEndpoint[] = [
     method: 'GET',
     path: '/api/analytics/cointegration',
     tab: 'Statistical Tests',
-    params: { symbol1: 'BTCUSDT', symbol2: 'ETHUSDT', lookback: '500' },
+    params: { symbol1: 'BTCUSDT', symbol2: 'ETHUSDT', lookback: '500', interval: '1s' },
     description: 'Engle-Granger cointegration test, statistic, p-value, interpretation',
   },
   
@@ -212,27 +212,34 @@ export const APIDebug: React.FC = () => {
       const url = endpoint.path;
 
       if (endpoint.method === 'GET') {
-        // Replace dynamic params with current selections if needed
-        const params = { ...endpoint.params };
-        if (params.symbol1 === 'BTCUSDT') params.symbol1 = selectedSymbol1 || 'BTCUSDT';
-        if (params.symbol2 === 'ETHUSDT') params.symbol2 = selectedSymbol2 || 'ETHUSDT';
-        if (params.lookback) params.lookback = String(settings.lookbackPeriod);
-        if (params.symbol === 'BTCUSDT') params.symbol = selectedSymbol1 || 'BTCUSDT';
+        // Build params but do NOT overwrite explicit endpoint params (respect their provided values).
+        const params: Record<string, string> = {};
+        if (endpoint.params) {
+          Object.assign(params, endpoint.params);
+        }
+        // Fill in missing dynamic values from current selections
+        if (!params.symbol1) params.symbol1 = selectedSymbol1 || 'BTCUSDT';
+        if (!params.symbol2) params.symbol2 = selectedSymbol2 || 'ETHUSDT';
+        if (!params.lookback) params.lookback = String(settings.lookbackPeriod);
+        if (!params.symbol && selectedSymbol1) params.symbol = selectedSymbol1;
+        // Add cache-busting timestamp to avoid any cached responses
+        params._ts = String(Date.now());
 
         const queryString = new URLSearchParams(params).toString();
-        response = await fetch(`http://localhost:8000${url}?${queryString}`);
+        response = await fetch(`http://localhost:8000${url}?${queryString}`, { cache: 'no-store' });
       } else {
         // POST
         const body = { ...endpoint.body };
         if (body.symbol1 === 'BTCUSDT') body.symbol1 = selectedSymbol1 || 'BTCUSDT';
         if (body.symbol2 === 'ETHUSDT') body.symbol2 = selectedSymbol2 || 'ETHUSDT';
-        if (body.lookback) body.lookback = settings.lookbackPeriod;
+        if (body.lookback === undefined || body.lookback === null) body.lookback = settings.lookbackPeriod;
         if (body.symbol === 'BTCUSDT') body.symbol = selectedSymbol1 || 'BTCUSDT';
 
         response = await fetch(`http://localhost:8000${url}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          cache: 'no-store'
         });
       }
 

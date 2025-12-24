@@ -13,6 +13,7 @@ import {
   Stack,
   Divider,
 } from '@mui/material';
+import { FormControl, InputLabel, Select, MenuItem } from '@mui/material';
 import { PlayArrow, TrendingUp, TrendingDown, AttachMoney } from '@mui/icons-material';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -23,7 +24,7 @@ import { debug, info } from '@/types';
 const COMPONENT_NAME = 'Backtesting';
 
 export const Backtesting: React.FC = () => {
-  const { selectedSymbol1, selectedSymbol2 } = useStore();
+  const { selectedSymbol1, selectedSymbol2, settings, setAggregationInterval } = useStore();
   const [entryThreshold, setEntryThreshold] = useState(2.0);
   const [exitThreshold, setExitThreshold] = useState(0.5);
   const [stopLoss, setStopLoss] = useState(3.0);
@@ -47,7 +48,7 @@ export const Backtesting: React.FC = () => {
 
   // Fetch backtest results
   const { data: backtestData, isLoading, error, refetch } = useQuery({
-    queryKey: ['backtest', selectedSymbol1, selectedSymbol2, entryThreshold, exitThreshold, stopLoss, lookback],
+    queryKey: ['backtest', selectedSymbol1, selectedSymbol2, entryThreshold, exitThreshold, stopLoss, lookback, settings.aggregationInterval],
     queryFn: () => api.runBacktest(selectedSymbol1!, selectedSymbol2!, entryThreshold, exitThreshold, stopLoss, lookback),
     enabled: runBacktest && !!selectedSymbol1 && !!selectedSymbol2,
   });
@@ -75,6 +76,9 @@ export const Backtesting: React.FC = () => {
       initial_capital: 100000.0,
       params: {},
     };
+    // include timeframe so backend calculates using requested OHLC interval
+    const { settings } = useStore.getState()
+    options.interval = settings.aggregationInterval || '1m'
     if (strategy === 'rsi') {
       options.params.rsi_buy = rsiBuy;
       options.params.rsi_sell = rsiSell;
@@ -257,6 +261,24 @@ export const Backtesting: React.FC = () => {
                       inputProps={{ step: 0.1, min: 0 }}
                       helperText="Enter trade when |z-score| > this value"
                     />
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <FormControl fullWidth>
+                      <InputLabel id="bt-timeframe-label">Timeframe</InputLabel>
+                      <Select
+                        labelId="bt-timeframe-label"
+                        value={settings.aggregationInterval}
+                        label="Timeframe"
+                        onChange={(e) => setAggregationInterval(e.target.value as string)}
+                      >
+                        <MenuItem value="1m">1m</MenuItem>
+                        <MenuItem value="5m">5m</MenuItem>
+                        <MenuItem value="15m">15m</MenuItem>
+                        <MenuItem value="1h">1h</MenuItem>
+                        <MenuItem value="4h">4h</MenuItem>
+                        <MenuItem value="1d">1d</MenuItem>
+                      </Select>
+                    </FormControl>
                   </Grid>
                   <Grid item xs={12} sm={4}>
                     <TextField

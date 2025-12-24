@@ -108,8 +108,9 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     // Settings
-    lookbackMinutes: 15,
+    lookbackMinutes: 500,
     aggregationInterval: '1m',
+    apiInterval: '1s',
     zscoreEntry: 2.0,
     zscoreExit: 0.0,
     rsiOversold: 30,
@@ -121,6 +122,10 @@ export const useStore = create<AppState>((set, get) => {
     setAggregationInterval: (interval) => {
       debug('Store', 'Aggregation interval changed', { interval })
       set((state) => ({ aggregationInterval: interval, settings: { ...state.settings, aggregationInterval: interval } }))
+    },
+    setApiInterval: (interval: string) => {
+      debug('Store', 'API interval changed', { interval })
+      set((state) => ({ apiInterval: interval, settings: { ...state.settings, apiInterval: interval } }))
     },
     setZscoreEntry: (value) => {
       debug('Store', 'Z-score entry threshold changed', { value })
@@ -141,8 +146,9 @@ export const useStore = create<AppState>((set, get) => {
 
     // Derived settings object for pages expecting a settings structure
     settings: {
-      lookbackPeriod: 15,
+      lookbackPeriod: 500,
       aggregationInterval: '1m',
+      apiInterval: '1s',
       zScoreThreshold: 2.0,
       zScoreExit: 0.0,
       rsiOversold: 30,

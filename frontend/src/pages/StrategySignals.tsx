@@ -10,6 +10,15 @@ import {
   CircularProgress,
   Paper,
   Stack,
+  Autocomplete,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  FormControlLabel,
+  Switch,
+  Button,
 } from '@mui/material';
 import { TrendingUp, TrendingDown, ShowChart } from '@mui/icons-material';
 import { useQuery } from '@tanstack/react-query';
@@ -21,18 +30,43 @@ import { debug, info } from '@/types';
 const COMPONENT_NAME = 'StrategySignals';
 
 export const StrategySignals: React.FC = () => {
-  const { selectedSymbol1, selectedSymbol2, settings } = useStore();
+  const { selectedSymbol1, selectedSymbol2, settings, availableSymbols, setAvailableSymbols, setAggregationInterval } = useStore();
 
   debug(COMPONENT_NAME, 'Rendering strategy signals', {
     symbol1: selectedSymbol1,
     symbol2: selectedSymbol2,
   });
 
+  // Local UI state: typed symbol input and explicit applied override (Apply button)
+  const [inputSymbol, setInputSymbol] = React.useState<string | null>(null)
+  const [appliedSymbol, setAppliedSymbol] = React.useState<string | null>(null)
+
+  // Timeframe selector uses global store setter so other pages stay in sync
+  const timeframe = settings.aggregationInterval || '1m'
+
+  // Ensure available symbols are populated (query and store)
+  const { data: symbols } = useQuery({
+    queryKey: ['symbols'],
+    queryFn: () => api.getSymbols(),
+    staleTime: 1000 * 60 * 5,
+    onSuccess: (s) => {
+      if (Array.isArray(s) && s.length > 0) setAvailableSymbols(s)
+    },
+  })
+
+  // Use the applied override (only changes when user clicks Apply). If none, use pair selection from Spread Analysis.
+  const symbol1 = appliedSymbol || selectedSymbol1
+  const symbol2 = appliedSymbol ? undefined : selectedSymbol2
+
   // Fetch technical indicators
   const { data: indicators, isLoading, error } = useQuery({
-    queryKey: ['indicators', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod],
-    queryFn: () => api.getIndicators(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod),
-    enabled: !!selectedSymbol1 && !!selectedSymbol2,
+    queryKey: ['indicators', symbol1, symbol2, settings.lookbackPeriod, timeframe],
+    queryFn: () => {
+      if (!symbol1) return Promise.resolve(null as any)
+      if (symbol2) return api.getIndicators(symbol1!, symbol2!, settings.lookbackPeriod, timeframe)
+      return api.getIndicators(symbol1!, settings.lookbackPeriod, undefined, timeframe)
+    },
+    enabled: !!symbol1,
     refetchInterval: 10000, // Refresh every 10 seconds
   });
 
@@ -41,6 +75,48 @@ export const StrategySignals: React.FC = () => {
       info(COMPONENT_NAME, 'Indicators received', indicators);
     }
   }, [indicators]);
+
+  // Client-side RSI alerting: create an alert when RSI crosses lenient thresholds (uses store settings)
+  React.useEffect(() => {
+    try {
+      if (!indicators || !Array.isArray(indicators.rsi) || indicators.rsi.length === 0) return
+      const store = useStore.getState()
+      const last = Number(indicators.rsi[indicators.rsi.length - 1])
+      if (!Number.isFinite(last)) return
+
+      const over = store.settings.rsiOverbought ?? store.rsiOverbought ?? 70
+      const under = store.settings.rsiOversold ?? store.rsiOversold ?? 30
+
+      const recent = store.alerts.find(a => a.type === 'RSI' && a.symbol === (symbol1 || '') && (Date.now() - a.timestamp) < 60000)
+      if (recent) return // suppress duplicates within 60s
+
+      if (last >= over) {
+        store.addAlert({
+          id: `rsi-over-${symbol1 || 'unknown'}-${Date.now()}`,
+          timestamp: Date.now(),
+          symbol: symbol1 || '',
+          type: 'RSI',
+          message: `RSI ${last.toFixed(0)} >= ${over} (overbought)`,
+          severity: 'warning',
+          triggered: true,
+          value: last,
+        })
+      } else if (last <= under) {
+        store.addAlert({
+          id: `rsi-under-${symbol1 || 'unknown'}-${Date.now()}`,
+          timestamp: Date.now(),
+          symbol: symbol1 || '',
+          type: 'RSI',
+          message: `RSI ${last.toFixed(0)} <= ${under} (oversold)`,
+          severity: 'warning',
+          triggered: true,
+          value: last,
+        })
+      }
+    } catch (e) {
+      debug(COMPONENT_NAME, 'RSI alert generation failed', e)
+    }
+  }, [indicators, symbol1])
 
   // Normalize indicator shapes to provide a consistent API for the UI
   const macdArray = indicators
@@ -123,12 +199,71 @@ export const StrategySignals: React.FC = () => {
         Technical analysis using RSI, MACD, and Bollinger Bands to identify trading opportunities.
       </Typography>
 
+      {/* Controls: typed symbol input, Apply button, and timeframe */}
+      <Box mb={2}>
+        <Grid container spacing={2} alignItems="center">
+          <Grid item xs={12} md={6} lg={5}>
+            <Autocomplete
+              freeSolo
+              options={availableSymbols && availableSymbols.length ? availableSymbols : []}
+              value={inputSymbol}
+              onChange={(e, v) => setInputSymbol(v as string | null)}
+              onInputChange={(e, v) => setInputSymbol(v === '' ? null : v)}
+              renderInput={(params) => <TextField {...params} label="Symbol (leave empty to use pair from Spread Analysis)" />}
+            />
+          </Grid>
+          <Grid item xs={6} md={2} lg={2}>
+            <Button
+              fullWidth
+              variant="contained"
+              onClick={() => setAppliedSymbol(inputSymbol)}
+            >
+              Apply
+            </Button>
+          </Grid>
+          <Grid item xs={6} md={3} lg={2}>
+            <FormControl fullWidth>
+              <InputLabel id="timeframe-label">Timeframe</InputLabel>
+              <Select
+                labelId="timeframe-label"
+                value={timeframe}
+                label="Timeframe"
+                onChange={(e) => setAggregationInterval(e.target.value as string)}
+              >
+                <MenuItem value="1m">1m</MenuItem>
+                <MenuItem value="5m">5m</MenuItem>
+                <MenuItem value="15m">15m</MenuItem>
+                <MenuItem value="1h">1h</MenuItem>
+                <MenuItem value="4h">4h</MenuItem>
+                <MenuItem value="1d">1d</MenuItem>
+              </Select>
+            </FormControl>
+          </Grid>
+          <Grid item xs={6} md={2} lg={1}>
+            <FormControlLabel
+              control={<Switch checked={!!appliedSymbol} onChange={(e) => {
+                if (e.target.checked) {
+                  // enable single-symbol mode: apply either current appliedSymbol, typed input, or the currently selected primary symbol
+                  const useSym = appliedSymbol || inputSymbol || selectedSymbol1
+                  setAppliedSymbol(useSym || null)
+                  setInputSymbol(useSym || null)
+                } else {
+                  // disable override
+                  setAppliedSymbol(null)
+                }
+              }} />}
+              label="Single"
+            />
+          </Grid>
+        </Grid>
+      </Box>
+
       <Grid container spacing={3}>
         {/* No symbols selected */}
-        {(!selectedSymbol1 || !selectedSymbol2) && (
+        {(!symbol1) && (
           <Grid item xs={12}>
             <Alert severity="info">
-              Please select symbols in the Spread Analysis tab to view technical indicators.
+              Please select a symbol (or leave empty to use the pair selected in Spread Analysis) to view technical indicators.
             </Alert>
           </Grid>
         )}

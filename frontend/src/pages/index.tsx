@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Box, Typography, Alert, Grid, Card, CardContent, TextField, MenuItem, Button, Stack, Divider } from '@mui/material';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { Box, Typography, Alert, Grid, Card, CardContent, TextField, MenuItem, Button, Stack, Divider, Paper } from '@mui/material';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Cell } from 'recharts';
+import { ScatterChart, Scatter } from 'recharts';
 import { useStore } from '@/store';
 import { useSymbols } from '@/hooks/useSymbols';
 import { debug, info } from '@/types';
@@ -324,30 +325,103 @@ export const KalmanRobust: React.FC = () => {
           </Card>
         </Grid>
 
-        {/* Regression Scatter */}
+        {/* Regression Scatter with Insights */}
         <Grid item xs={12}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>Regression Scatter: {symbol1} vs {symbol2}</Typography>
-              <Typography variant="body2" color="text.secondary" paragraph>
-                Each point represents a simultaneous price observation. The slope of the best-fit line is the <strong>hedge ratio</strong> ({currentHedgeRatio.toFixed(4)}). Tighter clustering indicates higher R² (stronger relationship). Use longer timeframes (200+ points) for robust regression analysis.
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={scatterData.slice(-100)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis 
-                    dataKey="x" 
-                    label={{ value: symbol2, position: 'insideBottom', offset: -5 }}
-                    domain={[(dataMin: number) => Math.floor(dataMin * 0.999), (dataMax: number) => Math.ceil(dataMax * 1.001)]}
+              <Typography variant="h6" gutterBottom>Pairs Regression Analysis: {symbol1} vs {symbol2}</Typography>
+              <Alert severity="info" sx={{ mb: 2 }}>
+                <strong>What This Shows:</strong> Each dot = simultaneous price pair. The line = optimal hedge ratio from OLS regression. 
+                Tight clustering around line = high correlation (good for pairs trading). Wide scatter = weak relationship (risky for pairs).
+              </Alert>
+              
+              {/* Metrics Row */}
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Current Hedge Ratio</Typography>
+                    <Typography variant="h5">{currentHedgeRatio.toFixed(4)}</Typography>
+                    <Typography variant="caption">
+                      Trade: Buy {currentHedgeRatio.toFixed(2)} units of {symbol1} for every 1 unit of {symbol2}
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Relationship Strength</Typography>
+                    <Typography variant="h5">
+                      {scatterData.length >= 30 ? 'Strong' : 'Weak'}
+                    </Typography>
+                    <Typography variant="caption">
+                      {scatterData.length} observations (need 50+ for confidence)
+                    </Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Data Quality</Typography>
+                    <Typography variant="h5">
+                      {scatterData.length >= 100 ? '✓ Good' : '⚠ Limited'}
+                    </Typography>
+                    <Typography variant="caption">
+                      {scatterData.length >= 100 ? 'Sufficient data for regression' : 'Need more data for robust analysis'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+
+              {/* Trading Insights */}
+              <Alert severity="success" sx={{ mb: 2 }}>
+                <Typography variant="body2">
+                  <strong>📈 Trading Strategy:</strong>
+                  <br />
+                  • Use hedge ratio ({currentHedgeRatio.toFixed(4)}) to construct spread: Spread = {symbol1}_price - {currentHedgeRatio.toFixed(4)} × {symbol2}_price
+                  <br />
+                  • Points far from line = outliers = potential mean-reversion opportunities
+                  <br />
+                  • Stable hedge ratio over time = reliable pairs relationship
+                  <br />
+                  • Check Statistical Tests tab for stationarity and cointegration before trading
+                </Typography>
+              </Alert>
+
+              <ResponsiveContainer width="100%" height={350}>
+                <ScatterChart data={scatterData.slice(-200)}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                  <XAxis
+                    type="number"
+                    dataKey="x"
+                    name={symbol2}
+                    domain={["auto", "auto"]}
+                    tickFormatter={(v: number) => v.toFixed(2)}
+                    label={{ value: `${symbol2} Price`, position: 'insideBottom', offset: -5 }}
                   />
-                  <YAxis 
-                    label={{ value: symbol1, angle: -90, position: 'insideLeft' }}
-                    domain={[(dataMin: number) => Math.floor(dataMin * 0.999), (dataMax: number) => Math.ceil(dataMax * 1.001)]}
+                  <YAxis
+                    type="number"
+                    dataKey="y"
+                    name={symbol1}
+                    domain={["auto", "auto"]}
+                    tickFormatter={(v: number) => v.toFixed(2)}
+                    label={{ value: `${symbol1} Price`, angle: -90, position: 'insideLeft' }}
                   />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="y" stroke="#82ca9d" dot={{ r: 3 }} isAnimationActive={false} />
-                </LineChart>
+                  <Tooltip 
+                    cursor={{ stroke: 'rgba(255,255,255,0.2)', strokeWidth: 2 }} 
+                    formatter={(value: number, name: string) => [value.toFixed(2), name]} 
+                  />
+                  <Scatter 
+                    name="Price Pairs" 
+                    data={scatterData.slice(-200)} 
+                    fill="#82ca9d" 
+                    fillOpacity={0.6}
+                    line={{ stroke: '#8884d8', strokeWidth: 2 }} 
+                  />
+                </ScatterChart>
               </ResponsiveContainer>
+              
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
+                💡 <strong>Interpretation:</strong> Dots tightly clustered = high R² = strong predictive relationship. 
+                Dots scattered widely = low R² = unreliable hedge. Monitor hedge ratio stability in the chart above.
+              </Typography>
             </CardContent>
           </Card>
         </Grid>
@@ -364,21 +438,23 @@ export const Liquidity: React.FC = () => {
 
   const symbolTicks = ticks.get(symbol) || [];
 
-  // Build volume profile: group by price level
+  // Build volume profile: group by price level with $5 bins
   const volumeProfile: { [price: string]: number } = {};
   let totalVolume = 0;
   const currentPrice = symbolTicks.length > 0 ? symbolTicks[symbolTicks.length - 1].price : 0;
   
-  // Use finer granularity: $1 bins for better price resolution
+  // Use $5 bins for better price resolution
+  const binSize = 5;
   for (const tick of symbolTicks) {
-    const priceLevel = Math.round(tick.price); // Round to nearest $1
+    const priceLevel = Math.floor(tick.price / binSize) * binSize; // Round down to nearest $5
     const key = priceLevel.toString();
     volumeProfile[key] = (volumeProfile[key] || 0) + tick.quantity;
     totalVolume += tick.quantity;
   }
   
-  // Filter to prices within ±2% of current price for focused view
-  const priceRange = currentPrice * 0.02;
+  // Ensure minimum $50 range centered on current price (±$25)
+  const minRange = 50;
+  const priceRange = Math.max(currentPrice * 0.02, minRange / 2); // At least ±$25
   const filteredProfile: { [price: string]: number } = {};
   for (const [price, volume] of Object.entries(volumeProfile)) {
     const p = parseFloat(price);
@@ -392,6 +468,26 @@ export const Liquidity: React.FC = () => {
     volume,
   })).sort((a, b) => a.price - b.price);
 
+  // If still too few data points, expand range further
+  if (profileData.length < 10) {
+    const expandedProfile: { [price: string]: number } = {};
+    const expandedRange = currentPrice * 0.05; // Expand to ±5%
+    for (const [price, volume] of Object.entries(volumeProfile)) {
+      const p = parseFloat(price);
+      if (Math.abs(p - currentPrice) <= expandedRange) {
+        expandedProfile[price] = volume;
+      }
+    }
+    const expandedData = Object.entries(expandedProfile).map(([price, volume]) => ({
+      price: parseFloat(price),
+      volume,
+    })).sort((a, b) => a.price - b.price);
+    if (expandedData.length > profileData.length) {
+      profileData.length = 0;
+      profileData.push(...expandedData);
+    }
+  }
+
   // Find POC (Point of Control) within the visible range
   const poc = profileData.reduce((max, item) => (item.volume > max.volume ? item : max), { price: currentPrice, volume: 0 });
 
@@ -399,21 +495,31 @@ export const Liquidity: React.FC = () => {
   const valueAreaThreshold = totalVolume * 0.7;
   let accumulatedVolume = 0;
   const valueArea = [];
-  for (const item of profileData.sort((a, b) => b.volume - a.volume)) {
+  for (const item of [...profileData].sort((a, b) => b.volume - a.volume)) {
     if (accumulatedVolume < valueAreaThreshold) {
       valueArea.push(item.price);
       accumulatedVolume += item.volume;
     }
   }
 
-  const valueAreaHigh = Math.max(...valueArea);
-  const valueAreaLow = Math.min(...valueArea);
+  const valueAreaHigh = valueArea.length > 0 ? Math.max(...valueArea) : currentPrice + 10;
+  const valueAreaLow = valueArea.length > 0 ? Math.min(...valueArea) : currentPrice - 10;
+
+  // Calculate Y-axis domain to ensure proper scale
+  const minPrice = profileData.length > 0 ? Math.min(...profileData.map(d => d.price)) : currentPrice - 25;
+  const maxPrice = profileData.length > 0 ? Math.max(...profileData.map(d => d.price)) : currentPrice + 25;
+  const priceSpread = maxPrice - minPrice;
+  const yDomain = [
+    Math.floor((minPrice - priceSpread * 0.1) / 5) * 5, // Add 10% padding, round to $5
+    Math.ceil((maxPrice + priceSpread * 0.1) / 5) * 5
+  ];
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>Liquidity Profile</Typography>
+      <Typography variant="h4" gutterBottom>Liquidity Profile & Volume Distribution</Typography>
       <Alert severity="info" sx={{ mb: 3 }}>
-        Volume profile showing liquidity within ±2% of current price (${currentPrice.toFixed(2)}). POC: <strong>${poc.price.toFixed(2)}</strong>, Value Area: <strong>${valueAreaLow.toFixed(2)} - ${valueAreaHigh.toFixed(2)}</strong>
+        <strong>Volume Profile Analysis:</strong> Shows where most trading activity occurred. High-volume nodes act as support/resistance. 
+        POC (Point of Control) at <strong>${poc.price.toFixed(2)}</strong> is the price with highest traded volume.
       </Alert>
 
       {/* Symbol Selection */}
@@ -431,29 +537,129 @@ export const Liquidity: React.FC = () => {
       </TextField>
 
       <Grid container spacing={3}>
-        {/* Metrics */}
+        {/* Key Metrics with Trading Insights */}
         <Grid item xs={12} md={4}>
-          <Card>
+          <Card sx={{ bgcolor: currentPrice >= poc.price ? 'success.dark' : 'error.dark' }}>
             <CardContent>
               <Typography variant="body2" color="text.secondary">Point of Control (POC)</Typography>
               <Typography variant="h5">${poc.price.toFixed(2)}</Typography>
-              <Typography variant="caption">Volume: {poc.volume.toFixed(4)}</Typography>
+              <Typography variant="caption">Volume: {poc.volume.toFixed(2)}</Typography>
+              <Divider sx={{ my: 1 }} />
+              <Typography variant="caption" color="text.secondary">
+                <strong>Insight:</strong> POC is strongest support/resistance. 
+                {currentPrice >= poc.price ? ' Price above POC = bullish bias.' : ' Price below POC = bearish bias.'}
+              </Typography>
             </CardContent>
           </Card>
         </Grid>
         <Grid item xs={12} md={4}>
           <Card>
             <CardContent>
-              <Typography variant="body2" color="text.secondary">Value Area High</Typography>
+              <Typography variant="body2" color="text.secondary">Value Area High (VAH)</Typography>
               <Typography variant="h5">${valueAreaHigh.toFixed(2)}</Typography>
+              <Divider sx={{ my: 1 }} />
+              <Typography variant="caption" color="text.secondary">
+                <strong>Resistance Zone:</strong> 70% of volume traded below this level. Breakout above VAH signals strong buying.
+              </Typography>
             </CardContent>
           </Card>
         </Grid>
         <Grid item xs={12} md={4}>
           <Card>
             <CardContent>
-              <Typography variant="body2" color="text.secondary">Value Area Low</Typography>
+              <Typography variant="body2" color="text.secondary">Value Area Low (VAL)</Typography>
               <Typography variant="h5">${valueAreaLow.toFixed(2)}</Typography>
+              <Divider sx={{ my: 1 }} />
+              <Typography variant="caption" color="text.secondary">
+                <strong>Support Zone:</strong> 70% of volume traded above this level. Drop below VAL signals strong selling.
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Trading Decision Panel */}
+        <Grid item xs={12}>
+          <Card sx={{ bgcolor: 'primary.dark' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>📊 Trading Recommendations</Typography>
+              <Stack spacing={1}>
+                <Typography variant="body2">
+                  <strong>Current Price Position:</strong> ${currentPrice.toFixed(2)}
+                  {currentPrice > valueAreaHigh && ' (above VAH - overbought zone, watch for rejection)'}
+                  {currentPrice < valueAreaLow && ' (below VAL - oversold zone, watch for bounce)'}
+                  {currentPrice >= valueAreaLow && currentPrice <= valueAreaHigh && ' (within value area - balanced market)'}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Support Levels:</strong> POC ${poc.price.toFixed(2)}, VAL ${valueAreaLow.toFixed(2)}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Resistance Levels:</strong> VAH ${valueAreaHigh.toFixed(2)}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Strategy:</strong> 
+                  {currentPrice > valueAreaHigh && ' Consider taking profits or tightening stops. Watch for reversion to POC.'}
+                  {currentPrice < valueAreaLow && ' Look for long entries near support. Risk is rejection lower.'}
+                  {currentPrice >= valueAreaLow && currentPrice <= valueAreaHigh && ' Wait for breakout confirmation above VAH or below VAL before entering directional trades.'}
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Liquidity Heatmap (Volume Intensity) */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Liquidity Heatmap (Volume Intensity)</Typography>
+              <Typography variant="caption" color="text.secondary" paragraph>
+                Color intensity shows trading volume density over time and price. Brighter areas = higher liquidity. Price bins: $5 intervals.
+              </Typography>
+              <ResponsiveContainer width="100%" height={350}>
+                <ScatterChart margin={{ top: 10, right: 30, left: 70, bottom: 50 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                  <XAxis 
+                    dataKey="timestamp" 
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    tickFormatter={(ts) => new Date(ts).toLocaleTimeString()}
+                    label={{ value: 'Time (ms)', position: 'insideBottom', offset: -10 }}
+                    stroke="#fff"
+                  />
+                  <YAxis 
+                    dataKey="price" 
+                    type="number"
+                    domain={yDomain}
+                    ticks={Array.from({ length: Math.floor((yDomain[1] - yDomain[0]) / 5) + 1 }, (_, i) => yDomain[0] + i * 5)}
+                    tickFormatter={(value) => `${value.toFixed(0)}`}
+                    label={{ value: 'Price', angle: -90, position: 'insideLeft' }}
+                    stroke="#fff"
+                  />
+                  <Tooltip 
+                    cursor={{ strokeDasharray: '3 3' }}
+                    formatter={(value: any, name: string) => {
+                      if (name === 'volume') return [value.toFixed(4), 'Volume'];
+                      if (name === 'price') return [`$${value.toFixed(2)}`, 'Price'];
+                      return [value, name];
+                    }}
+                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.8)', border: '1px solid #555' }}
+                  />
+                  <Scatter 
+                    data={symbolTicks.slice(-500).map((tick, idx) => ({
+                      timestamp: tick.timestamp,
+                      price: Math.floor(tick.price / 5) * 5, // Bin to $5 intervals
+                      volume: tick.quantity,
+                      intensity: Math.min(tick.quantity * 100, 255)
+                    }))}
+                    fill="#8884d8"
+                  >
+                    {symbolTicks.slice(-500).map((tick, idx) => {
+                      const intensity = Math.min(tick.quantity * 100, 255);
+                      const color = `rgb(${Math.floor(intensity * 1.8)}, ${Math.floor(intensity * 0.8)}, ${Math.floor(255 - intensity)})`;
+                      return <Cell key={`cell-${idx}`} fill={color} />;
+                    })}
+                  </Scatter>
+                </ScatterChart>
+              </ResponsiveContainer>
             </CardContent>
           </Card>
         </Grid>
@@ -462,33 +668,46 @@ export const Liquidity: React.FC = () => {
         <Grid item xs={12}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>Volume Profile (±2% Range)</Typography>
-              <Typography variant="caption" color="text.secondary">
-                Showing liquidity distribution within ${(currentPrice * 0.98).toFixed(2)} - ${(currentPrice * 1.02).toFixed(2)}
+              <Typography variant="h6" gutterBottom>Volume Profile</Typography>
+              <Typography variant="caption" color="text.secondary" paragraph>
+                Horizontal bars show traded volume at each $5 price level. Longer bars = more liquidity = stronger support/resistance.
               </Typography>
-              <ResponsiveContainer width="100%" height={400}>
-                <LineChart data={profileData} layout="vertical">
-                  <XAxis type="number" label={{ value: 'Volume', position: 'insideBottom', offset: -5 }} />
+              <ResponsiveContainer width="100%" height={450}>
+                <BarChart data={profileData} layout="horizontal" margin={{ top: 10, right: 30, left: 70, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                  <XAxis 
+                    type="number" 
+                    label={{ value: 'Volume', position: 'insideBottom', offset: -5 }}
+                    stroke="#fff"
+                  />
                   <YAxis 
                     type="number" 
                     dataKey="price" 
-                    domain={['dataMin', 'dataMax']}
-                    tickFormatter={(value) => `$${value.toFixed(2)}`}
-                    label={{ value: 'Price Level', angle: -90, position: 'insideLeft' }}
+                    domain={yDomain}
+                    ticks={Array.from({ length: Math.floor((yDomain[1] - yDomain[0]) / 5) + 1 }, (_, i) => yDomain[0] + i * 5)}
+                    tickFormatter={(value) => `${value.toFixed(0)}`}
+                    label={{ value: 'Price', angle: -90, position: 'insideLeft' }}
+                    stroke="#fff"
                   />
                   <Tooltip 
                     formatter={(value: number) => [value.toFixed(6), 'Volume']}
                     labelFormatter={(label: number) => `Price: $${label.toFixed(2)}`}
+                    contentStyle={{ backgroundColor: 'rgba(0,0,0,0.8)', border: '1px solid #555' }}
                   />
-                  <Line 
-                    type="monotone" 
+                  <ReferenceLine 
+                    y={poc.price} 
+                    stroke="#ff0000" 
+                    strokeWidth={2} 
+                    label={{ value: 'POC', position: 'right', fill: '#ff0000' }}
+                  />
+                  <ReferenceLine y={valueAreaHigh} stroke="#00ff00" strokeDasharray="3 3" />
+                  <ReferenceLine y={valueAreaLow} stroke="#00ff00" strokeDasharray="3 3" />
+                  <Bar 
                     dataKey="volume" 
-                    stroke="#1976d2" 
-                    fill="#1976d2" 
-                    strokeWidth={3}
-                    dot={{ fill: '#1976d2', r: 3 }}
+                    fill="#4fc3f7"
+                    radius={[0, 4, 4, 0]}
                   />
-                </LineChart>
+                </BarChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>
@@ -640,6 +859,45 @@ export const Microstructure: React.FC = () => {
                   <Line type="monotone" dataKey="intensity" stroke="#ff7300" strokeWidth={2} name="Tick Count" />
                 </LineChart>
               </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Insights */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Microstructure Insights</Typography>
+              <Typography variant="body2" color="text.secondary" paragraph>
+                Quick interpretation based on recent VWAP deviation, effective spread, and trade intensity.
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">VWAP Deviation (last tick)</Typography>
+                    <Typography variant="h6">{latest.vwapDeviation ? latest.vwapDeviation.toFixed(2) + '%' : 'N/A'}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {latest.vwapDeviation > 0.2 ? 'Price above VWAP — potential short pressure' : latest.vwapDeviation < -0.2 ? 'Price below VWAP — potential buy pressure' : 'Price near VWAP — balanced'}
+                    </Typography>
+                  </Paper>
+                </Grid>
+
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Avg Effective Spread (last 250 ticks)</Typography>
+                    <Typography variant="h6">${(recentMetrics.reduce((s, r) => s + (r.effectiveSpread || 0), 0) / Math.max(1, recentMetrics.length)).toFixed(2)}</Typography>
+                    <Typography variant="caption" color="text.secondary">Wider spreads indicate lower liquidity and higher transaction costs.</Typography>
+                  </Paper>
+                </Grid>
+
+                <Grid item xs={12} md={4}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="caption" color="text.secondary">Trade Intensity</Typography>
+                    <Typography variant="h6">{avgIntensity.toFixed(1)} ticks/min</Typography>
+                    <Typography variant="caption" color="text.secondary">{avgIntensity > 500 ? 'Very active — higher volatility likely' : avgIntensity > 100 ? 'Active' : 'Low activity'}</Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
             </CardContent>
           </Card>
         </Grid>

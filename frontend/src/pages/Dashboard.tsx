@@ -116,8 +116,8 @@ export const Dashboard: React.FC = () => {
 
   // Fetch spread analysis if symbols selected
   const { data: spreadData, isLoading: spreadLoading } = useQuery({
-    queryKey: ['spread', selectedSymbol1, selectedSymbol2],
-    queryFn: () => api.getSpreadAnalysis(selectedSymbol1!, selectedSymbol2!),
+    queryKey: ['spread', selectedSymbol1, selectedSymbol2, settings.aggregationInterval, settings.lookbackPeriod],
+    queryFn: () => api.getSpreadAnalysis(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod, settings.aggregationInterval),
     enabled: !!selectedSymbol1 && !!selectedSymbol2,
     refetchInterval: 10000, // Refresh every 10 seconds
   });

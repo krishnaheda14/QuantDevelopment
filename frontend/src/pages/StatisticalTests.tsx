@@ -11,35 +11,44 @@ import {
   Chip,
   Divider,
   Stack,
+  IconButton,
+  Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  TextField,
 } from '@mui/material';
+import { FormControl, InputLabel, Select, MenuItem } from '@mui/material';
 import { useStore } from '@/store';
 import api from '@/services/api';
 import { debug, info as logInfo } from '@/types';
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle, Cancel, Info } from '@mui/icons-material';
+import { CheckCircle, Cancel, Info, InfoOutlined } from '@mui/icons-material';
 
 const COMPONENT_NAME = 'StatisticalTests';
 
 export const StatisticalTests: React.FC = () => {
-  const { selectedSymbol1, selectedSymbol2, settings } = useStore();
+  const { selectedSymbol1, selectedSymbol2, settings, setLookbackMinutes } = useStore();
+  const [showAdfDebug, setShowAdfDebug] = React.useState(false);
+  const [showCointegDebug, setShowCointegDebug] = React.useState(false);
 
   debug(COMPONENT_NAME, 'Rendering statistical tests', {
     symbol1: selectedSymbol1,
     symbol2: selectedSymbol2,
   });
 
-  // Fetch ADF test results
+  // Fetch ADF test results with rolling window analysis (30-bar window, step 5)
   const { data: adfData, isLoading: adfLoading, error: adfError } = useQuery({
-    queryKey: ['adf', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod],
-    queryFn: () => api.getADFTest(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod),
+    queryKey: ['adf', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod, settings.aggregationInterval],
+    queryFn: () => api.getADFTest(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod, settings.aggregationInterval, 30, 5),
     enabled: !!selectedSymbol1 && !!selectedSymbol2,
     refetchInterval: 30000, // Refresh every 30 seconds
   });
 
   // Fetch cointegration test results
   const { data: cointegData, isLoading: cointegLoading, error: cointegError } = useQuery({
-    queryKey: ['cointegration', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod],
-    queryFn: () => api.getCointegration(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod),
+    queryKey: ['cointegration', selectedSymbol1, selectedSymbol2, settings.lookbackPeriod, settings.aggregationInterval, settings.apiInterval],
+    queryFn: () => api.getCointegration(selectedSymbol1!, selectedSymbol2!, settings.lookbackPeriod, settings.apiInterval || settings.aggregationInterval),
     enabled: !!selectedSymbol1 && !!selectedSymbol2,
     refetchInterval: 30000, // Refresh every 30 seconds
   });
@@ -64,6 +73,54 @@ export const StatisticalTests: React.FC = () => {
       <Typography variant="body2" color="text.secondary" paragraph>
         Augmented Dickey-Fuller (ADF) test for stationarity and cointegration analysis for pairs trading.
       </Typography>
+
+      {/* Timeframe and API Interval selectors */}
+      <Box mb={2} display="flex" gap={2} flexWrap="wrap" alignItems="center">
+        <FormControl sx={{ minWidth: 160 }}>
+          <InputLabel id="st-timeframe-label">Timeframe</InputLabel>
+          <Select
+            labelId="st-timeframe-label"
+            value={settings.aggregationInterval}
+            label="Timeframe"
+            onChange={(e) => useStore.getState().setAggregationInterval(e.target.value as string)}
+          >
+            <MenuItem value="1s">1s</MenuItem>
+            <MenuItem value="1m">1m</MenuItem>
+            <MenuItem value="5m">5m</MenuItem>
+            <MenuItem value="15m">15m</MenuItem>
+            <MenuItem value="1h">1h</MenuItem>
+            <MenuItem value="4h">4h</MenuItem>
+            <MenuItem value="1d">1d</MenuItem>
+          </Select>
+        </FormControl>
+
+        <FormControl sx={{ minWidth: 160 }}>
+          <InputLabel id="st-api-interval-label">API Interval</InputLabel>
+          <Select
+            labelId="st-api-interval-label"
+            value={settings.apiInterval}
+            label="API Interval"
+            onChange={(e) => useStore.getState().setApiInterval(e.target.value as string)}
+          >
+            <MenuItem value="1s">1s</MenuItem>
+            <MenuItem value="1m">1m</MenuItem>
+            <MenuItem value="5m">5m</MenuItem>
+            <MenuItem value="1h">1h</MenuItem>
+          </Select>
+        </FormControl>
+        <TextField
+          label="Lookback (bars)"
+          type="number"
+          size="small"
+          value={settings.lookbackPeriod}
+          onChange={(e) => {
+            const v = Math.max(1, Math.min(1440, Number(e.target.value) || 1));
+            setLookbackMinutes(v);
+          }}
+          inputProps={{ min: 1, max: 1440 }}
+          sx={{ width: 140 }}
+        />
+      </Box>
 
       <Grid container spacing={3}>
         {/* No symbols selected */}
@@ -138,6 +195,56 @@ export const StatisticalTests: React.FC = () => {
                 </CardContent>
               </Card>
             </Grid>
+
+            {/* Rolling-window stationary percentage (optional) */}
+            {typeof adfData.stationary_pct !== 'undefined' && adfData.stationary_pct !== null && (
+              <Grid item xs={12} md={6}>
+                <Card>
+                  <CardContent>
+                    <Stack spacing={2}>
+                      <Typography variant="h6">Rolling ADF Stability</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Percentage of rolling windows where ADF indicated stationarity.
+                      </Typography>
+                      <Box display="flex" alignItems="center" justifyContent="space-between">
+                        <Typography variant="h4">{(adfData.stationary_pct * 100).toFixed(1)}%</Typography>
+                        <Chip
+                          label={adfData.is_stationary_by_threshold ? 'OK to Trade' : 'Avoid Trading'}
+                          color={adfData.is_stationary_by_threshold ? 'success' : 'error'}
+                        />
+                      </Box>
+                      <Typography variant="caption" color="text.secondary">
+                        Recommendation: Trade only if ADF is stationary in ≥70% of rolling windows.
+                      </Typography>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Grid>
+            )}
+
+            {/* Rolling ADF Visualization Chart */}
+            {typeof adfData.stationary_pct !== 'undefined' && adfData.stationary_pct !== null && (
+              <Grid item xs={12}>
+                <Card>
+                  <CardContent>
+                    <Typography variant="h6" gutterBottom>
+                      Rolling Window Stationarity Analysis
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" paragraph>
+                      Summary: {(adfData.stationary_pct * 100).toFixed(1)}% of rolling windows are stationary (p {'<'} 0.05)
+                    </Typography>
+                    <Alert severity={adfData.is_stationary_by_threshold ? 'success' : 'warning'} sx={{ mb: 2 }}>
+                      {adfData.is_stationary_by_threshold
+                        ? '✓ Stationarity is consistent across rolling windows. Spread is reliable for mean-reversion.'
+                        : '⚠ Stationarity varies significantly. Spread may have unstable mean-reversion properties.'}
+                    </Alert>
+                    <Typography variant="caption" color="text.secondary">
+                      Note: Detailed window-by-window p-values require backend enhancement. This shows aggregate stability.
+                    </Typography>
+                  </CardContent>
+                </Card>
+              </Grid>
+            )}
 
             <Grid item xs={12} md={6}>
               <Card>
@@ -244,7 +351,14 @@ export const StatisticalTests: React.FC = () => {
                 <CardContent>
                   <Stack spacing={2}>
                     <Box display="flex" alignItems="center" justifyContent="space-between">
-                      <Typography variant="h6">Cointegration Status</Typography>
+                      <Box>
+                        <Typography variant="h6">Cointegration Status</Typography>
+                        {cointegData.timestamp && (
+                          <Typography variant="caption" color="text.secondary">
+                            Last calculated: {new Date(cointegData.timestamp).toLocaleString()}
+                          </Typography>
+                        )}
+                      </Box>
                       {cointegData.is_cointegrated ? (
                         <CheckCircle color="success" fontSize="large" />
                       ) : (
@@ -271,15 +385,29 @@ export const StatisticalTests: React.FC = () => {
               <Card>
                 <CardContent>
                   <Stack spacing={2}>
-                    <Typography variant="h6">Test Statistics</Typography>
+                    <Box display="flex" alignItems="center" justifyContent="space-between">
+                      <Typography variant="h6">Test Statistics</Typography>
+                      <Tooltip title="Show backend response">
+                        <IconButton size="small" onClick={() => setShowCointegDebug(true)}>
+                          <InfoOutlined />
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
                     <Divider />
                     <Box>
                       <Typography variant="caption" color="text.secondary">
                         Cointegration Statistic
                       </Typography>
                       <Typography variant="h5" fontWeight="bold">
-                        {(cointegData.cointegration_statistic ?? 0).toFixed(4)}
+                        {cointegData.cointegration_statistic != null
+                          ? (cointegData.cointegration_statistic).toFixed(4)
+                          : 'N/A'}
                       </Typography>
+                      {cointegData.cointegration_statistic == null && (
+                        <Typography variant="caption" color="warning.main">
+                          Unable to compute (insufficient data or zero variance)
+                        </Typography>
+                      )}
                     </Box>
                     <Box>
                       <Typography variant="caption" color="text.secondary">
@@ -345,6 +473,29 @@ export const StatisticalTests: React.FC = () => {
           </>
         )}
       </Grid>
+
+      {/* Debug Dialogs */}
+      {adfData && (
+        <Dialog open={showAdfDebug} onClose={() => setShowAdfDebug(false)} maxWidth="md" fullWidth>
+          <DialogTitle>ADF Test - Backend Response</DialogTitle>
+          <DialogContent>
+            <pre style={{ fontSize: '0.85rem', overflow: 'auto' }}>
+              {JSON.stringify(adfData, null, 2)}
+            </pre>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {cointegData && (
+        <Dialog open={showCointegDebug} onClose={() => setShowCointegDebug(false)} maxWidth="md" fullWidth>
+          <DialogTitle>Cointegration Test - Backend Response</DialogTitle>
+          <DialogContent>
+            <pre style={{ fontSize: '0.85rem', overflow: 'auto' }}>
+              {JSON.stringify(cointegData, null, 2)}
+            </pre>
+          </DialogContent>
+        </Dialog>
+      )}
     </Box>
   );
 };

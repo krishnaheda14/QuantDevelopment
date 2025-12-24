@@ -44,17 +44,25 @@ export interface ADFTestResult {
   critical_values: Record<string, number>
   is_stationary: boolean
   interpretation: string
+  observations: number
+  // Rolling window fields (optional)
+  stationary_pct?: number | null
+  is_stationary_by_threshold?: boolean | null
 }
 
 export interface CointegrationResult {
-  hedge_ratio: number
-  spread_adf_stat: number
-  spread_p_value: number
+  hedge_ratio?: number
+  spread_adf_stat?: number
+  spread_p_value?: number
   is_cointegrated: boolean
-  interpretation: string
+  interpretation?: string
   // Compatibility aliases
-  cointegration_statistic?: number
+  cointegration_statistic?: number | null
   p_value?: number
+  r_squared?: number | null
+  observations?: number
+  timestamp?: string
+  critical_values?: any
 }
 
 export interface TechnicalIndicators {
